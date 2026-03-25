@@ -1,7 +1,22 @@
+# Python
 __pycache__/
 *.pyc
+.venv/
+
+# LaTeX build artifacts
 *.aux
 *.log
+
+# Generated output
 *.pdf
 *.png
+
+# Build and mosaic output
+builds/
+mosaic/
+
+# Logs
 nimmy.log
+
+# Allow committed examples
+!examples/*.pdf
