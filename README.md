@@ -1,6 +1,8 @@
 # niim-tex
 
-LaTeX-to-NIIMBOT D110 label print pipeline. Design labels in LaTeX with TikZ, compile to PDF, and print directly to a D110 thermal printer over BLE — all in one command.
+Design labels in LaTeX with TikZ and print them directly to NIIMBOT thermal printers over BLE.
+
+Currently supports the **D110 / D110-M**. Multi-device support (D11, B21, B1, B18) is planned — see [Roadmap](#roadmap).
 
 ## Requirements
 
@@ -16,12 +18,31 @@ pip install bleak Pillow
 ## Quick Start
 
 ```bash
-# 1. Generate a label template
-python niim_tex.py new 15x50
+# Copy a template and edit it
+cp templates/15x50.tex my_label.tex
+# Add your TikZ content, then print
+python niim_tex.py print my_label.tex
+```
 
-# 2. Edit the .tex file — add your content with TikZ
-# 3. Print it
-python niim_tex.py print label_15x50.tex
+Or generate a template interactively:
+
+```bash
+python niim_tex.py new        # interactive size picker
+python niim_tex.py new 12x40  # direct
+```
+
+See [examples/example_label.tex](examples/example_label.tex) for a fully designed label.
+
+## Project Structure
+
+```
+niim-tex/
+├── niim_tex.py         CLI tool (template generation, compilation, printing)
+├── d110.py             Async BLE driver for D110_M V4 protocol
+├── mosaic.py           Image-to-label-strip mosaic tool
+├── templates/          Pre-generated LaTeX templates for all label sizes
+├── examples/           Example labels with compiled PDFs
+└── builds/             Compilation output (PDF + PNG, gitignored)
 ```
 
 ## Commands
@@ -47,10 +68,38 @@ python niim_tex.py print label_15x50.tex
 python niim_tex.py print label.tex --density 3 --quantity 2 --rotate 0 --label-type 1
 ```
 
-- `--density N` — Print darkness, 1-3 (default: 3)
+- `--density N` — Print darkness, 1-5 (default: 3)
 - `--quantity N` — Number of copies (default: 1)
 - `--rotate DEG` — Additional rotation: 0, 90, 180, 270 (default: 0)
 - `--label-type T` — 1=gaps, 2=black mark, 3=continuous, 5=transparent (default: 1)
+
+## Build Output
+
+When you run `print`, compilation artifacts are saved to `builds/<name>/`:
+
+```
+builds/
+└── my_label/
+    ├── my_label.pdf   Compiled PDF
+    ├── my_label.png   Rotated bitmap sent to printer
+    ├── my_label.aux   LaTeX auxiliary
+    └── my_label.log   LaTeX log
+```
+
+## Mosaic (Image Tiling)
+
+Split any image into printable label strips. Stick the strips together to recreate the original image in black and white.
+
+```bash
+python mosaic.py photo.jpg --preview-only           # preview without printing
+python mosaic.py photo.jpg --dry-run                 # show strip count
+python mosaic.py photo.jpg                           # print all strips
+python mosaic.py photo.jpg --strips 3,5              # reprint specific strips
+python mosaic.py photo.jpg --size 15x50 --density 4  # custom size and density
+python mosaic.py photo.jpg --no-dither --threshold 128  # hard B&W threshold
+```
+
+Output is saved to `mosaic/<image_name>/` with individual strip images and a numbered preview.
 
 ## Supported Label Sizes
 
@@ -67,17 +116,11 @@ python niim_tex.py print label.tex --density 3 --quantity 2 --rotate 0 --label-t
 | 15x50 | 15mm | 50mm | 120 x 400 |
 | 12.5x74 | 12.5mm | 74mm | 100 x 592 |
 
-> The D110 printhead is 12mm (96px) wide. On tape wider than 12mm, templates are automatically capped to the 12mm printable area.
-
-## How It Works
-
-1. **Template generation** (`new`) — Creates a `.tex` file with correct `geometry` dimensions, TikZ canvas, and `\useasboundingbox` for pixel-perfect output
-2. **Compilation** (`print`) — Runs `pdflatex` → `magick` (203 DPI, rotate 90° CW, grayscale) → sends bitmap rows over BLE
-3. **BLE driver** (`d110.py`) — Custom async driver implementing the D110_M V4 protocol (9-byte PrintStart, 13-byte page size, pixel-counted row headers, write-without-response)
+> The D110 printhead is 12mm (96px) wide. On tape wider than 12mm, the printable area is still 12mm — templates are automatically capped to this limit.
 
 ## Template Anatomy
 
-Generated templates use landscape orientation (long axis horizontal) for natural text layout:
+Templates use landscape orientation (long axis horizontal) for natural text layout:
 
 ```latex
 \documentclass[10pt]{article}
@@ -103,14 +146,6 @@ Key details:
 - `\topskip=0pt` and `\parindent=0pt` eliminate LaTeX's default spacing
 - ImageMagick rotates the landscape PDF 90° CW to match the printer's physical feed direction
 
-## Files
-
-| File | Description |
-|------|-------------|
-| `niim_tex.py` | CLI tool — template generation, compilation, printing |
-| `d110.py` | Async BLE driver for D110_M V4 protocol |
-| `test_print.py` | Debug script used during protocol reverse engineering |
-
 ## Protocol Notes
 
 The D110_M uses the `D110MV4PrintTask` protocol, which differs significantly from the standard D110:
@@ -121,3 +156,12 @@ The D110_M uses the `D110MV4PrintTask` protocol, which differs significantly fro
 - **Pixel counts in row headers** — printhead split into 3 chunks
 - **All BLE writes use `response=False`** — write-without-response mode
 - **One-way heartbeat after `endPrint`** — BLE session cleanup workaround
+
+## Roadmap
+
+Multi-device support is planned. The NIIMBOT printer lineup:
+
+**D-series (12mm / 96px printhead):** D11, D11-H, D110, D110-M, D101
+**B-series (48mm / 384px printhead):** B1, B18, B21, B21S, B21 Pro
+
+Each model family uses a different print protocol variant. The goal is a unified Python driver with per-model print task implementations, similar to [niimprint](https://github.com/AndBondStyle/niimprint) but with the LaTeX template pipeline built in.
