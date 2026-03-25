@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import textwrap
 
 DPI = 203  # D110 native resolution
@@ -158,9 +159,9 @@ def run_print(tex_path, density=3, rotate=0, quantity=1):
             print(f"Error: '{tool}' not found in PATH. {hint}", file=sys.stderr)
             sys.exit(1)
 
-    base = os.path.splitext(tex_path)[0]
-    pdf_path = base + ".pdf"
-    png_path = base + ".png"
+    tex_path = os.path.abspath(tex_path)
+    tex_dir = os.path.dirname(tex_path)
+    base_name = os.path.splitext(os.path.basename(tex_path))[0]
 
     # Parse geometry for sanity checking
     pw, ph = parse_geometry_from_tex(tex_path)
@@ -168,84 +169,85 @@ def run_print(tex_path, density=3, rotate=0, quantity=1):
     if pw and ph:
         size_name, tape_w, label_l = find_label_size_for_geometry(pw, ph)
 
-    # Step 1: pdflatex
-    print(f"Compiling {tex_path}...")
-    result = subprocess.run(
-        ["pdflatex", "-interaction=nonstopmode", "-halt-on-error", tex_path],
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        print("pdflatex failed:", file=sys.stderr)
-        # Show last 20 lines of output for debugging
-        lines = result.stdout.strip().split("\n")
-        for line in lines[-20:]:
-            print(f"  {line}", file=sys.stderr)
-        sys.exit(1)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        pdf_path = os.path.join(tmpdir, base_name + ".pdf")
+        png_path = os.path.join(tmpdir, base_name + ".png")
 
-    if not os.path.isfile(pdf_path):
-        print(f"Error: pdflatex did not produce {pdf_path}", file=sys.stderr)
-        sys.exit(1)
-
-    # Step 2: PDF -> PNG via ImageMagick
-    # Landscape PDF gets rotated 90° CW to portrait for the printer
-    print(f"Converting to PNG at {DPI} DPI...")
-    result = subprocess.run(
-        ["magick", "-density", str(DPI), pdf_path,
-         "-rotate", "90",
-         "-colorspace", "Gray", "-depth", "8",
-         png_path],
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        print("ImageMagick conversion failed:", file=sys.stderr)
-        print(f"  {result.stderr.strip()}", file=sys.stderr)
-        sys.exit(1)
-
-    # Step 3: Sanity check dimensions
-    if tape_w and label_l:
-        expected_w = mm_to_px(tape_w)
-        expected_h = mm_to_px(label_l)
-        # Use magick identify to get actual dimensions
-        id_result = subprocess.run(
-            ["magick", "identify", "-format", "%w %h", png_path],
+        # Step 1: pdflatex (output everything to temp dir)
+        print(f"Compiling {os.path.basename(tex_path)}...")
+        result = subprocess.run(
+            ["pdflatex", "-interaction=nonstopmode", "-halt-on-error",
+             f"-output-directory={tmpdir}", tex_path],
             capture_output=True, text=True,
         )
-        if id_result.returncode == 0:
-            parts = id_result.stdout.strip().split()
-            if len(parts) == 2:
-                actual_w, actual_h = int(parts[0]), int(parts[1])
-                tolerance = 5  # pixels
-                if abs(actual_w - expected_w) > tolerance or abs(actual_h - expected_h) > tolerance:
-                    print(f"Warning: image is {actual_w}x{actual_h}px, "
-                          f"expected ~{expected_w}x{expected_h}px for {size_name or f'{tape_w}x{label_l}mm'}")
+        if result.returncode != 0:
+            print("pdflatex failed:", file=sys.stderr)
+            lines = result.stdout.strip().split("\n")
+            for line in lines[-20:]:
+                print(f"  {line}", file=sys.stderr)
+            sys.exit(1)
 
-    # Step 4: Send to printer via NiimPrintX
-    # NiimPrintX lives in the sibling directory; add it to PYTHONPATH so
-    # `python -m NiimPrintX.cli` resolves correctly.
-    niimprintx_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "NiimPrintX")
-    env = os.environ.copy()
-    env["PYTHONPATH"] = niimprintx_root + os.pathsep + env.get("PYTHONPATH", "")
+        if not os.path.isfile(pdf_path):
+            print(f"Error: pdflatex did not produce PDF", file=sys.stderr)
+            sys.exit(1)
 
-    print(f"Sending to D110 printer...")
-    cmd = [sys.executable, "-m", "NiimPrintX.cli", "print", "-m", "d110", "-i", png_path]
-    if density != 3:
-        cmd.extend(["-d", str(density)])
-    if rotate != 0:
-        cmd.extend(["-r", str(rotate)])
-    if quantity != 1:
-        cmd.extend(["-n", str(quantity)])
+        # Step 2: PDF -> PNG via ImageMagick
+        # Landscape PDF gets rotated 90° CW to portrait for the printer
+        print(f"Converting to PNG at {DPI} DPI...")
+        result = subprocess.run(
+            ["magick", "-density", str(DPI), pdf_path,
+             "-rotate", "90",
+             "-colorspace", "Gray", "-depth", "8",
+             png_path],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            print("ImageMagick conversion failed:", file=sys.stderr)
+            print(f"  {result.stderr.strip()}", file=sys.stderr)
+            sys.exit(1)
 
-    result = subprocess.run(cmd, env=env)
-    if result.returncode != 0:
-        print("NiimPrintX print failed.", file=sys.stderr)
-        sys.exit(1)
+        # Step 3: Sanity check dimensions
+        if tape_w and label_l:
+            expected_w = mm_to_px(tape_w)
+            expected_h = mm_to_px(label_l)
+            id_result = subprocess.run(
+                ["magick", "identify", "-format", "%w %h", png_path],
+                capture_output=True, text=True,
+            )
+            if id_result.returncode == 0:
+                parts = id_result.stdout.strip().split()
+                if len(parts) == 2:
+                    actual_w, actual_h = int(parts[0]), int(parts[1])
+                    tolerance = 5  # pixels
+                    if abs(actual_w - expected_w) > tolerance or abs(actual_h - expected_h) > tolerance:
+                        print(f"Warning: image is {actual_w}x{actual_h}px, "
+                              f"expected ~{expected_w}x{expected_h}px for {size_name or f'{tape_w}x{label_l}mm'}")
 
-    # Cleanup pdflatex artifacts
-    for ext in (".aux", ".log"):
-        path = base + ext
-        if os.path.isfile(path):
-            os.remove(path)
+        # Copy PDF to source directory (the only artifact the user wants)
+        final_pdf = os.path.join(tex_dir, base_name + ".pdf")
+        shutil.copy2(pdf_path, final_pdf)
+        print(f"PDF saved to {final_pdf}")
 
+        # Step 4: Send to printer via NiimPrintX
+        niimprintx_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "NiimPrintX")
+        env = os.environ.copy()
+        env["PYTHONPATH"] = niimprintx_root + os.pathsep + env.get("PYTHONPATH", "")
+
+        print(f"Sending to D110 printer...")
+        cmd = [sys.executable, "-m", "NiimPrintX.cli", "print", "-m", "d110", "-i", png_path]
+        if density != 3:
+            cmd.extend(["-d", str(density)])
+        if rotate != 0:
+            cmd.extend(["-r", str(rotate)])
+        if quantity != 1:
+            cmd.extend(["-n", str(quantity)])
+
+        result = subprocess.run(cmd, env=env)
+        if result.returncode != 0:
+            print("NiimPrintX print failed.", file=sys.stderr)
+            sys.exit(1)
+
+    # temp dir auto-cleaned here — only the PDF remains
     print("Done.")
 
 
