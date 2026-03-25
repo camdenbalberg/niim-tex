@@ -229,9 +229,6 @@ def run_print(tex_path, density=3, rotate=0, quantity=1):
         print(f"PDF saved to {final_pdf}")
 
         # Step 4: Send to printer via NiimPrintX
-        niimprintx_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "NiimPrintX")
-        env = os.environ.copy()
-        env["PYTHONPATH"] = niimprintx_root + os.pathsep + env.get("PYTHONPATH", "")
 
         print(f"Sending to D110 printer...")
         cmd = [sys.executable, "-m", "NiimPrintX.cli", "print", "-m", "d110", "-i", png_path]
@@ -242,13 +239,29 @@ def run_print(tex_path, density=3, rotate=0, quantity=1):
         if quantity != 1:
             cmd.extend(["-n", str(quantity)])
 
-        result = subprocess.run(cmd, env=env)
+        result = subprocess.run(cmd, env=_niimprintx_env())
         if result.returncode != 0:
             print("NiimPrintX print failed.", file=sys.stderr)
             sys.exit(1)
 
     # temp dir auto-cleaned here — only the PDF remains
     print("Done.")
+
+
+def _niimprintx_env():
+    """Return an env dict with PYTHONPATH set so NiimPrintX can be found."""
+    niimprintx_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "NiimPrintX")
+    env = os.environ.copy()
+    env["PYTHONPATH"] = niimprintx_root + os.pathsep + env.get("PYTHONPATH", "")
+    return env
+
+
+def run_info():
+    result = subprocess.run(
+        [sys.executable, "-m", "NiimPrintX.cli", "info", "-m", "d110"],
+        env=_niimprintx_env(),
+    )
+    sys.exit(result.returncode)
 
 
 def main():
@@ -264,6 +277,9 @@ def main():
     new_parser = sub.add_parser("new", help="Generate a LaTeX label template")
     new_parser.add_argument("size", nargs="?", help="Label size (e.g. 15x50). Interactive if omitted.")
     new_parser.add_argument("--name", help="Output filename (default: label_WxH.tex)")
+
+    # info
+    sub.add_parser("info", help="Show D110 printer info (battery, firmware)")
 
     # print
     print_parser = sub.add_parser("print", help="Compile and print a LaTeX label")
@@ -281,7 +297,9 @@ def main():
         list_sizes()
         return
 
-    if args.command == "new":
+    if args.command == "info":
+        run_info()
+    elif args.command == "new":
         if args.size:
             generate_tex(args.size, args.name)
         else:
