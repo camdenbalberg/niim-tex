@@ -33,6 +33,14 @@ def mm_to_px(mm):
     return round(mm * DPI / MM_PER_INCH)
 
 
+def get_output_dir(image_path):
+    """Return mosaic/<image_name>/ output directory, creating it if needed."""
+    base = os.path.splitext(os.path.basename(image_path))[0]
+    out_dir = os.path.join("mosaic", base)
+    os.makedirs(out_dir, exist_ok=True)
+    return out_dir
+
+
 def prepare_image(path, label_size, dither=True, threshold=128):
     """Load, resize, convert to B&W, and slice into label strips."""
     tape_w, label_l = label_size
@@ -70,6 +78,14 @@ def prepare_image(path, label_size, dither=True, threshold=128):
     return strips, img
 
 
+def save_strips(strips, out_dir, ext):
+    """Save individual strip images to the output directory."""
+    for i, strip in enumerate(strips):
+        strip_path = os.path.join(out_dir, f"strip{i + 1}{ext}")
+        strip.save(strip_path)
+    print(f"Saved {len(strips)} strips to {out_dir}/")
+
+
 def save_preview(strips, output_path):
     """Save a numbered preview image showing all strips with gap lines."""
     if not strips:
@@ -84,34 +100,50 @@ def save_preview(strips, output_path):
 
     for i, strip in enumerate(strips):
         y = i * (h + gap)
-        # Convert 1-bit strip to grayscale for pasting
         preview.paste(strip.convert("L"), (margin_left, y))
-        # Strip number
         draw.text((2, y + h // 2 - 5), str(i + 1), fill=0)
 
     preview.save(output_path)
     print(f"Preview saved to {output_path}")
 
 
-async def print_strips(strips, density=3, start=1):
-    """Connect to D110 and print each strip sequentially."""
+async def print_strips(strip_paths, density=3):
+    """Connect to D110 and print the given strip image files."""
     printer = D110()
     try:
         name = await printer.connect()
         print(f"Connected to {name}")
 
-        total = len(strips)
-        for i in range(start - 1, total):
-            strip = strips[i]
+        total = len(strip_paths)
+        for idx, path in enumerate(strip_paths):
+            strip = Image.open(path)
             # Rotate 90° CW — landscape strip → portrait for printer feed
             rotated = strip.rotate(-90, expand=True)
-            print(f"Printing strip {i + 1}/{total}...")
+            strip_num = os.path.basename(path)
+            print(f"Printing {strip_num} ({idx + 1}/{total})...")
             await printer.print_image(rotated, density=density)
-            print(f"  Strip {i + 1} done.")
+            print(f"  {strip_num} done.")
+
+            # Wait for printer to advance past the label gap before next job
+            if idx < total - 1:
+                await asyncio.sleep(2)
 
         print("All strips printed.")
     finally:
         await printer.disconnect()
+
+
+def parse_strip_list(spec, n_strips):
+    """Parse a comma-separated strip list like '3,5' into sorted indices."""
+    indices = []
+    for part in spec.split(","):
+        part = part.strip()
+        num = int(part)
+        if num < 1 or num > n_strips:
+            print(f"Error: strip {num} out of range (1-{n_strips})", file=sys.stderr)
+            sys.exit(1)
+        indices.append(num)
+    return sorted(set(indices))
 
 
 def main():
@@ -131,11 +163,11 @@ def main():
     parser.add_argument("--threshold", type=int, default=128, metavar="N",
                         help="B&W threshold 0-255, used with --no-dither (default: 128)")
     parser.add_argument("--preview-only", action="store_true",
-                        help="Generate preview image without printing")
+                        help="Generate strips and preview without printing")
     parser.add_argument("--dry-run", action="store_true",
-                        help="Show strip count and dimensions, don't print")
-    parser.add_argument("--start", type=int, default=1, metavar="N",
-                        help="Start printing from strip N (1-indexed, for reprints)")
+                        help="Show strip count and dimensions, don't generate or print")
+    parser.add_argument("--strips", type=str, metavar="LIST",
+                        help="Print specific strips only, e.g. '3,5' or '2'")
 
     args = parser.parse_args()
 
@@ -156,6 +188,28 @@ def main():
     print(f"Label: {args.size} ({tape_w}mm tape, {label_l}mm length)")
     print(f"Strip: {strip_w_px}x{strip_h_px}px ({label_l}mm x {PRINTABLE_HEIGHT_MM}mm)")
 
+    # Check if strips already exist on disk (for --strips reprints)
+    out_dir = get_output_dir(args.image)
+    ext = os.path.splitext(args.image)[1] or ".png"
+
+    # If just reprinting specific strips from existing output, skip processing
+    if args.strips and not args.preview_only and not args.dry_run:
+        existing = [f for f in os.listdir(out_dir) if f.startswith("strip") and not f.startswith("strip0")]
+        if existing:
+            # Figure out total strip count from existing files
+            nums = [int(f.replace("strip", "").split(".")[0]) for f in existing]
+            n_total = max(nums)
+            selected = parse_strip_list(args.strips, n_total)
+            paths = [os.path.join(out_dir, f"strip{n}{ext}") for n in selected]
+            # Verify all requested strips exist
+            for p in paths:
+                if not os.path.isfile(p):
+                    print(f"Error: {p} not found. Re-run without --strips to regenerate.", file=sys.stderr)
+                    sys.exit(1)
+            print(f"Reprinting strips {', '.join(str(s) for s in selected)} from {out_dir}/")
+            asyncio.run(print_strips(paths, density=args.density))
+            return
+
     strips, full_img = prepare_image(
         args.image, label_size,
         dither=args.dither, threshold=args.threshold,
@@ -168,19 +222,21 @@ def main():
     if args.dry_run:
         return
 
-    # Always save preview
-    base = os.path.splitext(os.path.basename(args.image))[0]
-    preview_path = f"{base}_mosaic_preview.png"
-    save_preview(strips, preview_path)
+    # Save individual strips and preview
+    save_strips(strips, out_dir, ext)
+    save_preview(strips, os.path.join(out_dir, "preview.png"))
 
     if args.preview_only:
         return
 
-    if args.start < 1 or args.start > n:
-        print(f"Error: --start must be between 1 and {n}", file=sys.stderr)
-        sys.exit(1)
+    # Determine which strips to print
+    if args.strips:
+        selected = parse_strip_list(args.strips, n)
+    else:
+        selected = list(range(1, n + 1))
 
-    asyncio.run(print_strips(strips, density=args.density, start=args.start))
+    paths = [os.path.join(out_dir, f"strip{s}{ext}") for s in selected]
+    asyncio.run(print_strips(paths, density=args.density))
 
 
 if __name__ == "__main__":
