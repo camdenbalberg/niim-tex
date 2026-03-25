@@ -219,7 +219,13 @@ def run_print(tex_path, density=3, rotate=0, quantity=1):
                     print(f"Warning: image is {actual_w}x{actual_h}px, "
                           f"expected ~{expected_w}x{expected_h}px for {size_name or f'{tape_w}x{label_l}mm'}")
 
-    # Step 4: Send to printer
+    # Step 4: Send to printer via NiimPrintX
+    # NiimPrintX lives in the sibling directory; add it to PYTHONPATH so
+    # `python -m NiimPrintX.cli` resolves correctly.
+    niimprintx_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "NiimPrintX")
+    env = os.environ.copy()
+    env["PYTHONPATH"] = niimprintx_root + os.pathsep + env.get("PYTHONPATH", "")
+
     print(f"Sending to D110 printer...")
     cmd = [sys.executable, "-m", "NiimPrintX.cli", "print", "-m", "d110", "-i", png_path]
     if density != 3:
@@ -229,7 +235,7 @@ def run_print(tex_path, density=3, rotate=0, quantity=1):
     if quantity != 1:
         cmd.extend(["-n", str(quantity)])
 
-    result = subprocess.run(cmd)
+    result = subprocess.run(cmd, env=env)
     if result.returncode != 0:
         print("NiimPrintX print failed.", file=sys.stderr)
         sys.exit(1)
