@@ -9,7 +9,6 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 
 from PIL import Image
 
@@ -169,7 +168,6 @@ def run_print(tex_path, density=3, rotate=0, quantity=1, label_type=1):
             sys.exit(1)
 
     tex_path = os.path.abspath(tex_path)
-    tex_dir = os.path.dirname(tex_path)
     base_name = os.path.splitext(os.path.basename(tex_path))[0]
 
     # Parse geometry for sanity checking
@@ -178,90 +176,88 @@ def run_print(tex_path, density=3, rotate=0, quantity=1, label_type=1):
     if pw and ph:
         size_name, tape_w, label_l = find_label_size_for_geometry(pw, ph)
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        pdf_path = os.path.join(tmpdir, base_name + ".pdf")
-        png_path = os.path.join(tmpdir, base_name + ".png")
+    # Structured build output directory
+    build_dir = os.path.join(os.getcwd(), "builds", base_name)
+    os.makedirs(build_dir, exist_ok=True)
+    pdf_path = os.path.join(build_dir, base_name + ".pdf")
+    png_path = os.path.join(build_dir, base_name + ".png")
 
-        # Step 1: pdflatex (output everything to temp dir)
-        print(f"Compiling {os.path.basename(tex_path)}...")
-        result = subprocess.run(
-            ["pdflatex", "-interaction=nonstopmode", "-halt-on-error",
-             f"-output-directory={tmpdir}", tex_path],
+    # Step 1: pdflatex
+    print(f"Compiling {os.path.basename(tex_path)}...")
+    result = subprocess.run(
+        ["pdflatex", "-interaction=nonstopmode", "-halt-on-error",
+         f"-output-directory={build_dir}", tex_path],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        print("pdflatex failed:", file=sys.stderr)
+        lines = result.stdout.strip().split("\n")
+        for line in lines[-20:]:
+            print(f"  {line}", file=sys.stderr)
+        sys.exit(1)
+
+    if not os.path.isfile(pdf_path):
+        print(f"Error: pdflatex did not produce PDF", file=sys.stderr)
+        sys.exit(1)
+
+    # Step 2: PDF -> PNG via ImageMagick
+    # Landscape PDF gets rotated 90 CW to portrait for the printer
+    print(f"Converting to PNG at {DPI} DPI...")
+    result = subprocess.run(
+        ["magick", "-density", str(DPI), pdf_path,
+         "-rotate", "90",
+         "-colorspace", "Gray", "-depth", "8",
+         png_path],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        print("ImageMagick conversion failed:", file=sys.stderr)
+        print(f"  {result.stderr.strip()}", file=sys.stderr)
+        sys.exit(1)
+
+    # Step 3: Sanity check dimensions
+    if tape_w and label_l:
+        expected_w = mm_to_px(tape_w)
+        expected_h = mm_to_px(label_l)
+        id_result = subprocess.run(
+            ["magick", "identify", "-format", "%w %h", png_path],
             capture_output=True, text=True,
         )
-        if result.returncode != 0:
-            print("pdflatex failed:", file=sys.stderr)
-            lines = result.stdout.strip().split("\n")
-            for line in lines[-20:]:
-                print(f"  {line}", file=sys.stderr)
-            sys.exit(1)
+        if id_result.returncode == 0:
+            parts = id_result.stdout.strip().split()
+            if len(parts) == 2:
+                actual_w, actual_h = int(parts[0]), int(parts[1])
+                tolerance = 5  # pixels
+                if abs(actual_w - expected_w) > tolerance or abs(actual_h - expected_h) > tolerance:
+                    print(f"Warning: image is {actual_w}x{actual_h}px, "
+                          f"expected ~{expected_w}x{expected_h}px for {size_name or f'{tape_w}x{label_l}mm'}")
 
-        if not os.path.isfile(pdf_path):
-            print(f"Error: pdflatex did not produce PDF", file=sys.stderr)
-            sys.exit(1)
+    print(f"Build output saved to {build_dir}/")
 
-        # Step 2: PDF -> PNG via ImageMagick
-        # Landscape PDF gets rotated 90 CW to portrait for the printer
-        print(f"Converting to PNG at {DPI} DPI...")
-        result = subprocess.run(
-            ["magick", "-density", str(DPI), pdf_path,
-             "-rotate", "90",
-             "-colorspace", "Gray", "-depth", "8",
-             png_path],
-            capture_output=True, text=True,
-        )
-        if result.returncode != 0:
-            print("ImageMagick conversion failed:", file=sys.stderr)
-            print(f"  {result.stderr.strip()}", file=sys.stderr)
-            sys.exit(1)
+    # Step 4: Send to printer
+    print("Sending to D110 printer...")
+    img = Image.open(png_path)
 
-        # Step 3: Sanity check dimensions
-        if tape_w and label_l:
-            expected_w = mm_to_px(tape_w)
-            expected_h = mm_to_px(label_l)
-            id_result = subprocess.run(
-                ["magick", "identify", "-format", "%w %h", png_path],
-                capture_output=True, text=True,
-            )
-            if id_result.returncode == 0:
-                parts = id_result.stdout.strip().split()
-                if len(parts) == 2:
-                    actual_w, actual_h = int(parts[0]), int(parts[1])
-                    tolerance = 5  # pixels
-                    if abs(actual_w - expected_w) > tolerance or abs(actual_h - expected_h) > tolerance:
-                        print(f"Warning: image is {actual_w}x{actual_h}px, "
-                              f"expected ~{expected_w}x{expected_h}px for {size_name or f'{tape_w}x{label_l}mm'}")
+    if rotate != 0:
+        img = img.rotate(-rotate, expand=True)
 
-        # Copy PDF to source directory (the only artifact the user wants)
-        final_pdf = os.path.join(tex_dir, base_name + ".pdf")
-        shutil.copy2(pdf_path, final_pdf)
-        print(f"PDF saved to {final_pdf}")
+    printer = D110()
+    try:
+        name = asyncio.run(printer.connect())
+        print(f"Connected to {name}")
+        asyncio.run(printer.print_image(
+            img,
+            density=density,
+            quantity=quantity,
+            label_type=label_type,
+        ))
+        print("Print job completed.")
+    except Exception as e:
+        print(f"Print failed: {e}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        asyncio.run(printer.disconnect())
 
-        # Step 4: Send to printer
-        print("Sending to D110 printer...")
-        img = Image.open(png_path).copy()  # .copy() releases the file handle
-
-        if rotate != 0:
-            img = img.rotate(-rotate, expand=True)
-
-        printer = D110()
-        try:
-            name = asyncio.run(printer.connect())
-            print(f"Connected to {name}")
-            asyncio.run(printer.print_image(
-                img,
-                density=density,
-                quantity=quantity,
-                label_type=label_type,
-            ))
-            print("Print job completed.")
-        except Exception as e:
-            print(f"Print failed: {e}", file=sys.stderr)
-            sys.exit(1)
-        finally:
-            asyncio.run(printer.disconnect())
-
-    # temp dir auto-cleaned here — only the PDF remains
     print("Done.")
 
 
