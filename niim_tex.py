@@ -13,7 +13,7 @@ import tempfile
 
 from PIL import Image
 
-from d110 import D110
+from d110 import D110, LabelType, SoundType
 
 DPI = 203  # D110 native resolution
 MM_PER_INCH = 25.4
@@ -147,7 +147,7 @@ def find_label_size_for_geometry(pw, ph):
     return None, ph, pw  # unknown size, return as-is (ph=tape_w, pw=label_l)
 
 
-def run_print(tex_path, density=3, rotate=0, quantity=1):
+def run_print(tex_path, density=3, rotate=0, quantity=1, label_type=1):
     if not os.path.isfile(tex_path):
         print(f"Error: file not found: {tex_path}", file=sys.stderr)
         sys.exit(1)
@@ -196,7 +196,7 @@ def run_print(tex_path, density=3, rotate=0, quantity=1):
             sys.exit(1)
 
         # Step 2: PDF -> PNG via ImageMagick
-        # Landscape PDF gets rotated 90° CW to portrait for the printer
+        # Landscape PDF gets rotated 90 CW to portrait for the printer
         print(f"Converting to PNG at {DPI} DPI...")
         result = subprocess.run(
             ["magick", "-density", str(DPI), pdf_path,
@@ -242,7 +242,12 @@ def run_print(tex_path, density=3, rotate=0, quantity=1):
         try:
             name = asyncio.run(printer.connect())
             print(f"Connected to {name}")
-            asyncio.run(printer.print_image(img, density=density, quantity=quantity))
+            asyncio.run(printer.print_image(
+                img,
+                density=density,
+                quantity=quantity,
+                label_type=label_type,
+            ))
             print("Print job completed.")
         except Exception as e:
             print(f"Print failed: {e}", file=sys.stderr)
@@ -260,10 +265,168 @@ def run_info():
         name = asyncio.run(printer.connect())
         print(f"Connected to {name}")
         info = asyncio.run(printer.get_info())
-        print(f"  Serial:   {info['serial']}")
-        print(f"  Software: {info['software']}")
-        print(f"  Hardware: {info['hardware']}")
-        print(f"  Battery:  {info['battery']}%")
+        print(f"  Serial:        {info['serial']}")
+        print(f"  Software:      {info['software']}")
+        print(f"  Hardware:      {info['hardware']}")
+        print(f"  Battery:       {info['battery']}%")
+        print(f"  Density:       {info['density']}")
+        print(f"  Speed:         {info['speed']}")
+        print(f"  Label type:    {info['label_type']}")
+        print(f"  Device type:   {info['device_type']}")
+        if "bluetooth_address" in info:
+            print(f"  BT address:    {info['bluetooth_address']}")
+        if "auto_shutdown_time" in info:
+            print(f"  Auto shutdown: {info['auto_shutdown_time']}")
+        if "language" in info:
+            print(f"  Language:      {info['language']}")
+        if "print_mode" in info:
+            print(f"  Print mode:    {info['print_mode']}")
+        if "area" in info:
+            print(f"  Area:          {info['area']}")
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        asyncio.run(printer.disconnect())
+
+
+def run_rfid():
+    printer = D110()
+    try:
+        name = asyncio.run(printer.connect())
+        print(f"Connected to {name}")
+        rfid = asyncio.run(printer.get_rfid())
+        if rfid is None:
+            print("No RFID tag detected on label roll.")
+        else:
+            print(f"  UUID:       {rfid['uuid']}")
+            print(f"  Barcode:    {rfid['barcode']}")
+            print(f"  Serial:     {rfid['serial']}")
+            print(f"  Total:      {rfid['total_labels']} labels")
+            print(f"  Used:       {rfid['used_labels']} labels")
+            print(f"  Remaining:  {rfid['remaining_labels']} labels")
+            print(f"  Type:       {rfid['type']}")
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        asyncio.run(printer.disconnect())
+
+
+def run_heartbeat():
+    printer = D110()
+    try:
+        name = asyncio.run(printer.connect())
+        print(f"Connected to {name}")
+        hb = asyncio.run(printer.heartbeat())
+        if hb["closing_state"] is not None:
+            print(f"  Lid:    {'closed' if hb['closing_state'] == 0 else 'OPEN'}")
+        if hb["power_level"] is not None:
+            print(f"  Power:  level {hb['power_level']}")
+        if hb["paper_state"] is not None:
+            print(f"  Paper:  {'inserted' if hb['paper_state'] == 0 else 'NO PAPER'}")
+        if hb["rfid_read_state"] is not None:
+            print(f"  RFID:   {'ok' if hb['rfid_read_state'] else 'not read'}")
+        print(f"  Raw:    {hb['raw']}")
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        asyncio.run(printer.disconnect())
+
+
+def run_feed():
+    printer = D110()
+    try:
+        name = asyncio.run(printer.connect())
+        print(f"Connected to {name}")
+        print("Feeding paper for label calibration...")
+        asyncio.run(printer.calibrate_label())
+        print("Done.")
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        asyncio.run(printer.disconnect())
+
+
+def run_test_page():
+    printer = D110()
+    try:
+        name = asyncio.run(printer.connect())
+        print(f"Connected to {name}")
+        print("Printing test page...")
+        asyncio.run(printer.print_test_page())
+        print("Done.")
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        asyncio.run(printer.disconnect())
+
+
+def run_sound(action, sound_type, enabled=None):
+    printer = D110()
+    try:
+        name = asyncio.run(printer.connect())
+        print(f"Connected to {name}")
+        st = SoundType.BLUETOOTH if sound_type == "bluetooth" else SoundType.POWER
+        if action == "get":
+            state = asyncio.run(printer.get_sound(st))
+            print(f"  {sound_type} sound: {'on' if state else 'off'}")
+        else:
+            asyncio.run(printer.set_sound(st, enabled))
+            print(f"  {sound_type} sound set to {'on' if enabled else 'off'}")
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        asyncio.run(printer.disconnect())
+
+
+def run_shutdown_time(minutes):
+    time_map = {15: 1, 30: 2, 45: 3, 60: 4}
+    if minutes not in time_map:
+        print(f"Error: invalid time. Choose from: 15, 30, 45, 60", file=sys.stderr)
+        sys.exit(1)
+    printer = D110()
+    try:
+        name = asyncio.run(printer.connect())
+        print(f"Connected to {name}")
+        asyncio.run(printer.set_auto_shutdown_time(time_map[minutes]))
+        print(f"Auto-shutdown set to {minutes} minutes.")
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        asyncio.run(printer.disconnect())
+
+
+def run_cancel():
+    printer = D110()
+    try:
+        name = asyncio.run(printer.connect())
+        print(f"Connected to {name}")
+        asyncio.run(printer.cancel_print())
+        print("Print job cancelled.")
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        asyncio.run(printer.disconnect())
+
+
+def run_reset():
+    confirm = input("This will factory reset the printer. Are you sure? (yes/no): ").strip().lower()
+    if confirm != "yes":
+        print("Cancelled.")
+        return
+    printer = D110()
+    try:
+        name = asyncio.run(printer.connect())
+        print(f"Connected to {name}")
+        asyncio.run(printer.printer_reset())
+        print("Printer has been reset to factory settings.")
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
@@ -286,17 +449,49 @@ def main():
     new_parser.add_argument("--name", help="Output filename (default: label_WxH.tex)")
 
     # info
-    sub.add_parser("info", help="Show D110 printer info (battery, firmware)")
+    sub.add_parser("info", help="Show D110 printer info (battery, firmware, settings)")
+
+    # rfid
+    sub.add_parser("rfid", help="Read label roll RFID tag (remaining labels, type)")
+
+    # heartbeat
+    sub.add_parser("heartbeat", help="Check printer status (lid, paper, battery)")
 
     # print
     print_parser = sub.add_parser("print", help="Compile and print a LaTeX label")
     print_parser.add_argument("file", help="Path to .tex file")
-    print_parser.add_argument("--density", type=int, default=3, choices=range(1, 6),
-                              metavar="N", help="Print density 1-5 (default: 3)")
+    print_parser.add_argument("--density", type=int, default=3, choices=range(1, 4),
+                              metavar="N", help="Print density 1-3 (default: 3)")
     print_parser.add_argument("--rotate", type=int, default=0, choices=[0, 90, 180, 270],
                               metavar="DEG", help="Additional rotation (default: 0)")
     print_parser.add_argument("--quantity", type=int, default=1,
                               metavar="N", help="Number of copies (default: 1)")
+    print_parser.add_argument("--label-type", type=int, default=1, choices=[1, 2, 3, 5],
+                              metavar="T", help="Label type: 1=gaps, 2=black mark, 3=continuous, 5=transparent (default: 1)")
+
+    # feed
+    sub.add_parser("feed", help="Feed paper to recalibrate label positioning")
+
+    # test-page
+    sub.add_parser("test-page", help="Print the built-in test page")
+
+    # cancel
+    sub.add_parser("cancel", help="Cancel an ongoing print job")
+
+    # sound
+    sound_parser = sub.add_parser("sound", help="Get or set printer sounds")
+    sound_parser.add_argument("sound_type", choices=["bluetooth", "power"],
+                              help="Which sound to configure")
+    sound_parser.add_argument("state", nargs="?", choices=["on", "off"],
+                              help="Set sound on/off (omit to query current state)")
+
+    # shutdown
+    shutdown_parser = sub.add_parser("shutdown", help="Set auto-shutdown timer")
+    shutdown_parser.add_argument("minutes", type=int, choices=[15, 30, 45, 60],
+                                 help="Auto-shutdown time in minutes")
+
+    # reset
+    sub.add_parser("reset", help="Factory reset the printer (requires confirmation)")
 
     args = parser.parse_args()
 
@@ -306,13 +501,33 @@ def main():
 
     if args.command == "info":
         run_info()
+    elif args.command == "rfid":
+        run_rfid()
+    elif args.command == "heartbeat":
+        run_heartbeat()
     elif args.command == "new":
         if args.size:
             generate_tex(args.size, args.name)
         else:
             interactive_new(args.name)
     elif args.command == "print":
-        run_print(args.file, density=args.density, rotate=args.rotate, quantity=args.quantity)
+        run_print(args.file, density=args.density, rotate=args.rotate,
+                  quantity=args.quantity, label_type=args.label_type)
+    elif args.command == "feed":
+        run_feed()
+    elif args.command == "test-page":
+        run_test_page()
+    elif args.command == "cancel":
+        run_cancel()
+    elif args.command == "sound":
+        if args.state:
+            run_sound("set", args.sound_type, args.state == "on")
+        else:
+            run_sound("get", args.sound_type)
+    elif args.command == "shutdown":
+        run_shutdown_time(args.minutes)
+    elif args.command == "reset":
+        run_reset()
     else:
         parser.print_help()
 
