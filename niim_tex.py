@@ -2,6 +2,7 @@
 """niim-tex: LaTeX-to-NIIMBOT D110 label print pipeline."""
 
 import argparse
+import asyncio
 import math
 import os
 import re
@@ -9,7 +10,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import textwrap
+
+from PIL import Image
+
+from d110 import D110
 
 DPI = 203  # D110 native resolution
 MM_PER_INCH = 25.4
@@ -228,40 +232,43 @@ def run_print(tex_path, density=3, rotate=0, quantity=1):
         shutil.copy2(pdf_path, final_pdf)
         print(f"PDF saved to {final_pdf}")
 
-        # Step 4: Send to printer via NiimPrintX
-
-        print(f"Sending to D110 printer...")
-        cmd = [sys.executable, "-m", "NiimPrintX.cli", "print", "-m", "d110", "-i", png_path]
-        if density != 3:
-            cmd.extend(["-d", str(density)])
+        # Step 4: Send to printer
+        print("Sending to D110 printer...")
+        img = Image.open(png_path)
         if rotate != 0:
-            cmd.extend(["-r", str(rotate)])
-        if quantity != 1:
-            cmd.extend(["-n", str(quantity)])
+            img = img.rotate(-rotate, expand=True)
 
-        result = subprocess.run(cmd, env=_niimprintx_env())
-        if result.returncode != 0:
-            print("NiimPrintX print failed.", file=sys.stderr)
+        printer = D110()
+        try:
+            name = asyncio.run(printer.connect())
+            print(f"Connected to {name}")
+            asyncio.run(printer.print_image(img, density=density, quantity=quantity))
+            print("Print job completed.")
+        except Exception as e:
+            print(f"Print failed: {e}", file=sys.stderr)
             sys.exit(1)
+        finally:
+            asyncio.run(printer.disconnect())
 
     # temp dir auto-cleaned here — only the PDF remains
     print("Done.")
 
 
-def _niimprintx_env():
-    """Return an env dict with PYTHONPATH set so NiimPrintX can be found."""
-    niimprintx_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "NiimPrintX")
-    env = os.environ.copy()
-    env["PYTHONPATH"] = niimprintx_root + os.pathsep + env.get("PYTHONPATH", "")
-    return env
-
-
 def run_info():
-    result = subprocess.run(
-        [sys.executable, "-m", "NiimPrintX.cli", "info", "-m", "d110"],
-        env=_niimprintx_env(),
-    )
-    sys.exit(result.returncode)
+    printer = D110()
+    try:
+        name = asyncio.run(printer.connect())
+        print(f"Connected to {name}")
+        info = asyncio.run(printer.get_info())
+        print(f"  Serial:   {info['serial']}")
+        print(f"  Software: {info['software']}")
+        print(f"  Hardware: {info['hardware']}")
+        print(f"  Battery:  {info['battery']}%")
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        asyncio.run(printer.disconnect())
 
 
 def main():
