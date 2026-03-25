@@ -1,0 +1,27 @@
+\documentclass[10pt]{article}
+\usepackage[paperwidth=74mm,paperheight=12mm,margin=0mm]{geometry}
+\usepackage{tikz}
+\pagestyle{empty}
+\topskip=0pt
+\parindent=0pt
+
+\begin{document}
+\noindent
+\begin{tikzpicture}[x=1mm,y=1mm]
+  \useasboundingbox (0,0) rectangle (74,12);
+  % Label: 12.5x74 (12.5mm tape x 74mm length, 12mm printable height)
+  % Canvas: (0,0) to (74,12)
+  % Print:  python niim_tex.py print 12.5x74.tex
+  %
+% NOTE: This is a cable label (T12.5*74+35).
+%   - The 74mm flag folds in half at the 37mm midpoint.
+%   - Both halves stick together (non-sticky flag).
+%   - The 35mm cable wrap portion is beyond this template.
+%   - Consider designing for two mirrored halves,
+%     or a single design centered on one half (37mm).
+  % --- Your content below ---
+
+  \node[anchor=center] at (37.0,6.0) {Hello};
+
+\end{tikzpicture}
+\end{document}

@@ -1,0 +1,21 @@
+\documentclass[10pt]{article}
+\usepackage[paperwidth=50mm,paperheight=12mm,margin=0mm]{geometry}
+\usepackage{tikz}
+\pagestyle{empty}
+\topskip=0pt
+\parindent=0pt
+
+\begin{document}
+\noindent
+\begin{tikzpicture}[x=1mm,y=1mm]
+  \useasboundingbox (0,0) rectangle (50,12);
+  % Label: 15x50 (15mm tape x 50mm length, 12mm printable height)
+  % Canvas: (0,0) to (50,12)
+  % Print:  python niim_tex.py print 15x50.tex
+  %
+  % --- Your content below ---
+
+  \node[anchor=center] at (25.0,6.0) {Hello};
+
+\end{tikzpicture}
+\end{document}
