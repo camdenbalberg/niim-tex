@@ -368,9 +368,9 @@ class D110:
         return bool(data[0])
 
     async def set_density(self, density):
-        """Set print density (1-3 for D110)."""
-        if density > 3:
-            density = 3
+        """Set print density (1-5 for D110)."""
+        if density > 5:
+            density = 5
         _, data = await self._command(0x21, bytes((density,)))
         return bool(data[0])
 
@@ -483,14 +483,14 @@ class D110:
 
         Args:
             image: PIL Image to print.
-            density: Print darkness 1-3 (default 3).
+            density: Print darkness 1-5 (default 3).
             quantity: Number of copies (default 1).
             label_type: LabelType enum (default WITH_GAPS).
             vertical_offset: Pixel rows of blank space to add above image.
             horizontal_offset: Pixel columns to shift image (positive=right, negative=left).
         """
-        if density > 3:
-            density = 3
+        if density > 5:
+            density = 5
 
         # Convert to monochrome: invert so 1=black (heat), 0=white (no heat)
         img = ImageOps.invert(image.convert("L")).convert("1")

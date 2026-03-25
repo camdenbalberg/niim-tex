@@ -466,8 +466,8 @@ def main():
     # print
     print_parser = sub.add_parser("print", help="Compile and print a LaTeX label")
     print_parser.add_argument("file", help="Path to .tex file")
-    print_parser.add_argument("--density", type=int, default=3, choices=range(1, 4),
-                              metavar="N", help="Print density 1-3 (default: 3)")
+    print_parser.add_argument("--density", type=int, default=3, choices=range(1, 6),
+                              metavar="N", help="Print density 1-5 (default: 3)")
     print_parser.add_argument("--rotate", type=int, default=0, choices=[0, 90, 180, 270],
                               metavar="DEG", help="Additional rotation (default: 0)")
     print_parser.add_argument("--quantity", type=int, default=1,
