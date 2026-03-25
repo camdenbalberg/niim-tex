@@ -52,13 +52,11 @@ def generate_tex(size_key, output_name=None):
         sys.exit(1)
 
     tape_w, label_l = LABEL_SIZES[size_key]
-    margin = 1  # mm
+    printable_h = min(tape_w, 12)  # D110 printhead is 12mm (96px at 203 DPI)
 
-    # Landscape: long axis = paperwidth, short axis = paperheight
+    # Landscape: long axis = paperwidth, short axis = printable height
     pw = label_l
-    ph = tape_w
-    usable_w = pw - 2 * margin
-    usable_h = ph - 2 * margin
+    ph = printable_h
 
     filename = output_name if output_name else f"label_{size_key}.tex"
     if not filename.endswith(".tex"):
@@ -77,22 +75,29 @@ def generate_tex(size_key, output_name=None):
 
     lines = [
         f"\\documentclass[10pt]{{article}}",
-        f"\\usepackage[paperwidth={pw}mm,paperheight={ph}mm,margin={margin}mm]{{geometry}}",
+        f"\\usepackage[paperwidth={pw}mm,paperheight={ph}mm,margin=0mm]{{geometry}}",
+        f"\\usepackage{{tikz}}",
         f"\\pagestyle{{empty}}",
+        f"\\topskip=0pt",
+        f"\\parindent=0pt",
         f"",
         f"\\begin{{document}}",
-        f"% Label: {size_key} ({tape_w}mm tape width x {label_l}mm length)",
-        f"% Usable area: {usable_w}mm x {usable_h}mm (with {margin}mm margins)",
-        f"% Print with: python niim_tex.py print {filename}",
-        f"%",
+        f"\\noindent",
+        f"\\begin{{tikzpicture}}[x=1mm,y=1mm]",
+        f"  \\useasboundingbox (0,0) rectangle ({pw},{ph});",
+        f"  % Label: {size_key} ({tape_w}mm tape x {label_l}mm length, {ph}mm printable height)",
+        f"  % Canvas: (0,0) to ({pw},{ph})",
+        f"  % Print:  python niim_tex.py print {filename}",
+        f"  %",
     ]
     if cable_comment:
         lines.append(cable_comment.rstrip())
     lines.extend([
-        f"% --- Your content below ---",
+        f"  % --- Your content below ---",
         f"",
-        f"Hello",
+        f"  \\node[anchor=center] at ({pw/2},{ph/2}) {{Hello}};",
         f"",
+        f"\\end{{tikzpicture}}",
         f"\\end{{document}}",
     ])
     content = "\n".join(lines) + "\n"
@@ -234,7 +239,8 @@ def run_print(tex_path, density=3, rotate=0, quantity=1, label_type=1):
 
         # Step 4: Send to printer
         print("Sending to D110 printer...")
-        img = Image.open(png_path)
+        img = Image.open(png_path).copy()  # .copy() releases the file handle
+
         if rotate != 0:
             img = img.rotate(-rotate, expand=True)
 

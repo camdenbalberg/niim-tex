@@ -193,18 +193,43 @@ class D110:
         """Send a command and wait for the notification response."""
         self._notify_event.clear()
         await self.client.start_notify(self.char_uuid, self._on_notify)
-        await self.client.write_gatt_char(self.char_uuid, _packet(cmd, data))
+        await self.client.write_gatt_char(
+            self.char_uuid, _packet(cmd, data), response=False)
         await asyncio.wait_for(self._notify_event.wait(), timeout)
         await self.client.stop_notify(self.char_uuid)
         return _parse_response(self._notify_data)
 
     async def _write(self, cmd, data):
         """Send a packet without waiting for a response."""
-        await self.client.write_gatt_char(self.char_uuid, _packet(cmd, data))
+        await self.client.write_gatt_char(
+            self.char_uuid, _packet(cmd, data), response=False)
 
     async def _write_raw(self, raw_bytes):
         """Send raw bytes (for the connect packet with 0x03 prefix)."""
-        await self.client.write_gatt_char(self.char_uuid, raw_bytes)
+        await self.client.write_gatt_char(
+            self.char_uuid, raw_bytes, response=False)
+
+    async def _start_notify(self):
+        """Start persistent BLE notifications (for print sessions)."""
+        self._notify_event.clear()
+        await self.client.start_notify(self.char_uuid, self._on_notify)
+
+    async def _stop_notify(self):
+        """Stop BLE notifications."""
+        await self.client.stop_notify(self.char_uuid)
+
+    async def _cmd(self, cmd, data, timeout=10):
+        """Send command and wait for response (notifications must already be active)."""
+        self._notify_event.clear()
+        await self.client.write_gatt_char(
+            self.char_uuid, _packet(cmd, data), response=False)
+        await asyncio.wait_for(self._notify_event.wait(), timeout)
+        return _parse_response(self._notify_data)
+
+    async def _fire(self, cmd, data):
+        """Send packet one-way, no response expected."""
+        await self.client.write_gatt_char(
+            self.char_uuid, _packet(cmd, data), response=False)
 
     # ── Printer info ──────────────────────────────────────────────────
 
@@ -396,8 +421,10 @@ class D110:
 
     # ── Print job control ─────────────────────────────────────────────
 
-    async def start_print(self):
-        _, data = await self._command(0x01, b"\x01")
+    async def start_print(self, total_pages=1):
+        """Start print job. Uses 9-byte variant for D110_M."""
+        payload = struct.pack(">H7B", total_pages, 0, 0, 0, 0, 0, 0, 0)
+        _, data = await self._command(0x01, payload)
         return bool(data[0])
 
     async def end_print(self):
@@ -436,48 +463,23 @@ class D110:
     # ── Image encoding ────────────────────────────────────────────────
 
     @staticmethod
-    def _is_blank_row(img, y):
-        """Check if a row is entirely white (pixel value 1 in 1-bit image)."""
-        for x in range(img.width):
-            if img.getpixel((x, y)) != 0:
-                return False
-        return True
-
-    @staticmethod
-    def _count_black_pixels(img, y):
-        """Count non-zero (black) pixels in a row."""
-        count = 0
-        for x in range(img.width):
-            if img.getpixel((x, y)) != 0:
-                count += 1
-        return count
-
-    @staticmethod
-    def _encode_row_indexed(img, y):
-        """Encode a sparse row using indexed format (0x83) — for ≤6 black pixels.
-        Format: header + list of (u16 x-position) for each black pixel."""
-        positions = []
-        for x in range(img.width):
-            if img.getpixel((x, y)) != 0:
-                positions.append(x)
-        header = struct.pack(">H3BB", y, 0, 0, 0, len(positions))
-        pos_data = b"".join(struct.pack(">H", p) for p in positions)
-        return header + pos_data
-
-    @staticmethod
-    def _encode_row_bitmap(img, y):
-        """Encode a full bitmap row (0x85)."""
-        bits = "".join("0" if img.getpixel((x, y)) == 0 else "1" for x in range(img.width))
-        row_bytes = int(bits, 2).to_bytes(math.ceil(img.width / 8), "big")
-        header = struct.pack(">H3BB", y, 0, 0, 0, 1)
-        return header + row_bytes
+    def _pixel_counts(row_bytes, width_px):
+        """Count black pixels in 3 chunks (split mode for D110_M row header)."""
+        chunk_size = math.ceil(width_px / 8 / 3)
+        counts = [0, 0, 0]
+        for i, b in enumerate(row_bytes):
+            chunk = min(i // chunk_size, 2)
+            for bit in range(8):
+                if b & (0x80 >> bit):
+                    counts[chunk] += 1
+        return counts
 
     # ── Print image (full pipeline) ───────────────────────────────────
 
     async def print_image(self, image, density=3, quantity=1,
                           label_type=LabelType.WITH_GAPS,
                           vertical_offset=0, horizontal_offset=0):
-        """Print a PIL Image to the D110.
+        """Print a PIL Image to the D110_M using the V4 print sequence.
 
         Args:
             image: PIL Image to print.
@@ -490,72 +492,75 @@ class D110:
         if density > 3:
             density = 3
 
-        # Convert to monochrome bitmap
+        # Convert to monochrome: invert so 1=black (heat), 0=white (no heat)
         img = ImageOps.invert(image.convert("L")).convert("1")
 
         # Apply horizontal offset
         if horizontal_offset > 0:
-            img = ImageOps.expand(img, border=(horizontal_offset, 0, 0, 0), fill=1)
+            img = ImageOps.expand(img, border=(horizontal_offset, 0, 0, 0), fill=0)
         elif horizontal_offset < 0:
             img = img.crop((-horizontal_offset, 0, img.width, img.height))
 
         # Apply vertical offset
         if vertical_offset > 0:
-            img = ImageOps.expand(img, border=(0, vertical_offset, 0, 0), fill=1)
+            img = ImageOps.expand(img, border=(0, vertical_offset, 0, 0), fill=0)
 
         if img.width > MAX_WIDTH:
             raise ValueError(f"Image too wide: {img.width}px > {MAX_WIDTH}px")
 
-        # Set up print job
-        await self.set_density(density)
-        await self.set_label_type(label_type)
-        await self.start_print()
-        await self.print_clear()
-        await self.start_page()
-        await self.set_dimension(img.height, img.width)
-        await self.set_quantity(quantity)
+        # Start persistent notifications for the print session
+        await self._start_notify()
 
-        # Send image data with optimized encoding
-        blank_run = 0
-        for y in range(img.height):
-            if self._is_blank_row(img, y):
-                blank_run += 1
-                continue
+        try:
+            # 1. Init
+            await self._cmd(0x21, bytes((density,)))
+            await self._cmd(0x23, bytes((int(label_type),)))
+            await self._cmd(0x01, struct.pack(">H7B", quantity, 0, 0, 0, 0, 0, 0, 0))
 
-            # Flush blank rows as a single empty-row packet
-            if blank_run > 0:
-                await self._write(0x84, struct.pack(">H3B", y - blank_run, 0, 0, blank_run))
-                blank_run = 0
+            # 2. Throwaway one-way status (D110_M BLE workaround)
+            await self._fire(0xA3, b"\x01")
+            await asyncio.sleep(0.2)
+            self._notify_event.clear()
 
-            # Choose encoding based on pixel density
-            black_count = self._count_black_pixels(img, y)
-            if black_count <= 6:
-                await self._write(0x83, self._encode_row_indexed(img, y))
-            else:
-                await self._write(0x85, self._encode_row_bitmap(img, y))
+            # 3. setPageSize13b: rows, cols, copies, cutHeight, cutType, 0, sendAll, partHeight
+            page_size = struct.pack(">HHHH3BH",
+                                    img.height, img.width, quantity, 0, 0, 0, 0, 0)
+            await self._cmd(0x13, page_size)
 
-            # Line sync check every 200 lines
-            if y > 0 and y % 200 == 0:
-                await self._write(0x86, struct.pack(">H3B", y, 0, 0, 0))
+            # 4. Send image rows with pixel counts
+            for y in range(img.height):
+                bits = "".join(
+                    "0" if img.getpixel((x, y)) == 0 else "1"
+                    for x in range(img.width))
+                row_bytes = int(bits, 2).to_bytes(
+                    math.ceil(img.width / 8), "big")
+                counts = self._pixel_counts(row_bytes, img.width)
+                header = struct.pack(">H3BB", y,
+                                     counts[0], counts[1], counts[2], 1)
+                await self._fire(0x85, header + row_bytes)
+                await asyncio.sleep(0.01)
 
-            await asyncio.sleep(0.01)
+            await asyncio.sleep(0.5)
 
-        # Flush any trailing blank rows
-        if blank_run > 0:
-            await self._write(0x84, struct.pack(">H3B", img.height - blank_run, 0, 0, blank_run))
+            # 5. pageEnd
+            await self._cmd(0xE3, b"\x01")
 
-        # End page — poll until acknowledged
-        while True:
-            _, data = await self._command(0xE3, b"\x01")
-            if data[0]:
-                break
-            await asyncio.sleep(0.05)
+            # 6. Poll status until all copies done
+            for _ in range(100):
+                self._notify_event.clear()
+                await self._fire(0xA3, b"\x01")
+                await asyncio.wait_for(self._notify_event.wait(), 10)
+                _, data = _parse_response(self._notify_data)
+                page = struct.unpack(">H", data[:2])[0]
+                if page >= quantity:
+                    break
+                await asyncio.sleep(0.2)
 
-        # Wait for all copies to finish
-        while True:
-            status = await self.get_print_status()
-            if status["page"] >= quantity:
-                break
-            await asyncio.sleep(0.1)
+            # 7. endPrint
+            await self._cmd(0xF3, b"\x01")
 
-        await self.end_print()
+            # 8. One-way heartbeat after endPrint (BLE workaround)
+            await self._fire(0xDC, b"\x01")
+
+        finally:
+            await self._stop_notify()

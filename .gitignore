@@ -4,5 +4,4 @@ __pycache__/
 *.log
 *.pdf
 *.png
-*.tex
-!niim_tex.py
+nimmy.log

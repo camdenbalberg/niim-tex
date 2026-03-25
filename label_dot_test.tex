@@ -1,0 +1,23 @@
+\documentclass[10pt]{article}
+\usepackage[paperwidth=50mm,paperheight=12mm,margin=0mm]{geometry}
+\usepackage{tikz}
+\pagestyle{empty}
+\topskip=0pt
+\parindent=0pt
+
+\begin{document}
+\noindent
+\begin{tikzpicture}[x=1mm,y=1mm]
+  \useasboundingbox (0,0) rectangle (50,12);
+
+  % Top row — 10 dots flush with top edge (center at y=11.5, radius 0.5, top at y=12)
+  \foreach \x in {2.5, 7.5, 12.5, 17.5, 22.5, 27.5, 32.5, 37.5, 42.5, 47.5} {
+    \fill[black] (\x, 11.5) circle (0.5);
+  }
+
+  % Bottom row — 10 dots flush with bottom edge (center at y=0.5, radius 0.5, bottom at y=0)
+  \foreach \x in {2.5, 7.5, 12.5, 17.5, 22.5, 27.5, 32.5, 37.5, 42.5, 47.5} {
+    \fill[black] (\x, 0.5) circle (0.5);
+  }
+\end{tikzpicture}
+\end{document}
