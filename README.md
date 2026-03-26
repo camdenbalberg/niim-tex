@@ -7,14 +7,20 @@ Currently supports the **D110 / D110-M**. Multi-device support (D11, B21, B1, B1
 ## Install
 
 ```bash
-pip install -e .
+git clone https://github.com/camdenbalberg/niim-tex.git
+cd niim-tex
+python -m venv .venv
+# Windows
+.venv\Scripts\activate
+# macOS/Linux
+# source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
-Or without installing (dependencies still required):
+Or install as a package (adds `niim-tex` and `niim-mosaic` to your PATH):
 
 ```bash
-pip install bleak Pillow
-python niim_tex.py print my_label.tex
+pip install -e .
 ```
 
 ### Requirements
