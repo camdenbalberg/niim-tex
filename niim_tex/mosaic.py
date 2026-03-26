@@ -4,12 +4,54 @@
 import argparse
 import asyncio
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 
 from PIL import Image, ImageDraw, ImageOps
 
+# Register AVIF/HEIF support if pillow-heif is installed
+try:
+    import pillow_heif
+    pillow_heif.register_heif_opener()
+except ImportError:
+    pass
+
 from niim_tex import LABEL_SIZES, PRINTABLE_HEIGHT_MM, mm_to_px
 from niim_tex.models import get_printer
+
+
+def open_image(path):
+    """Open an image, falling back to ImageMagick for unsupported formats."""
+    try:
+        return Image.open(path)
+    except Exception:
+        pass
+
+    # Fallback: use ImageMagick to convert to PNG
+    if not shutil.which("magick"):
+        raise RuntimeError(
+            f"Cannot open '{os.path.basename(path)}' — Pillow doesn't support this format "
+            "and ImageMagick ('magick') is not on PATH for fallback conversion."
+        )
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+    tmp.close()
+    try:
+        result = subprocess.run(
+            ["magick", path, tmp.name],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"ImageMagick failed to convert '{os.path.basename(path)}': {result.stderr.strip()}"
+            )
+        print(f"Converted {os.path.basename(path)} via ImageMagick")
+        return Image.open(tmp.name)
+    except Exception:
+        os.unlink(tmp.name)
+        raise
 
 
 def get_output_dir(image_path):
@@ -29,7 +71,7 @@ def prepare_image(path, label_size, grid_width=1, force_height=None,
 
     canvas_w = grid_width * strip_w_px
 
-    img = Image.open(path).convert("RGB")
+    img = open_image(path).convert("RGB")
 
     if force_height is not None:
         canvas_h = force_height * strip_h_px
