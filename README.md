@@ -4,16 +4,25 @@ Design labels in LaTeX with TikZ and print them directly to NIIMBOT thermal prin
 
 Currently supports the **D110 / D110-M**. Multi-device support (D11, B21, B1, B18) is planned — see [Roadmap](#roadmap).
 
-## Requirements
+## Install
 
-- **Python 3.10+** with packages: `bleak`, `Pillow`
+```bash
+pip install -e .
+```
+
+Or without installing (dependencies still required):
+
+```bash
+pip install bleak Pillow
+python niim_tex.py print my_label.tex
+```
+
+### Requirements
+
+- **Python 3.10+**
 - **pdflatex** (MiKTeX or TeX Live)
 - **ImageMagick** (`magick` on PATH)
 - **NIIMBOT D110** (tested on D110_M V4 firmware)
-
-```
-pip install bleak Pillow
-```
 
 ## Quick Start
 
@@ -37,12 +46,21 @@ See [examples/example_label.tex](examples/example_label.tex) for a fully designe
 
 ```
 niim-tex/
-├── niim_tex.py         CLI tool (template generation, compilation, printing)
-├── d110.py             Async BLE driver for D110_M V4 protocol
-├── mosaic.py           Image-to-label-strip mosaic tool
-├── templates/          Pre-generated LaTeX templates for all label sizes
-├── examples/           Example labels with compiled PDFs
-└── builds/             Compilation output (PDF + PNG, gitignored)
+├── niim_tex/                  Python package
+│   ├── __init__.py            Shared constants (LABEL_SIZES, DPI, mm_to_px)
+│   ├── protocol.py            Packet framing, enums
+│   ├── printer.py             Base NiimbotPrinter class (BLE, info, settings)
+│   ├── models/
+│   │   ├── __init__.py        Model registry + get_printer()
+│   │   └── d110.py            D110_M V4 print task
+│   ├── cli.py                 Main CLI (template generation, compilation, printing)
+│   └── mosaic.py              Image-to-label-strip mosaic tool
+├── niim_tex.py                Wrapper script (backwards compat)
+├── mosaic.py                  Wrapper script (backwards compat)
+├── templates/                 Pre-generated LaTeX templates for all label sizes
+├── examples/                  Example labels with compiled PDFs
+├── builds/                    Compilation output (PDF + PNG, gitignored)
+└── pyproject.toml             Package metadata + entry points
 ```
 
 ## Commands
@@ -50,6 +68,7 @@ niim-tex/
 | Command | Description |
 |---------|-------------|
 | `--list` | Show all supported label sizes with pixel dimensions |
+| `--model MODEL` | Specify printer model (e.g. `d110`). Auto-detects if omitted |
 | `new [SIZE]` | Generate a LaTeX template (interactive menu if no size given) |
 | `print <file.tex>` | Compile LaTeX → PDF → PNG → send to printer |
 | `info` | Query printer info (battery, firmware, serial) |
@@ -146,6 +165,16 @@ Key details:
 - `\topskip=0pt` and `\parindent=0pt` eliminate LaTeX's default spacing
 - ImageMagick rotates the landscape PDF 90° CW to match the printer's physical feed direction
 
+## Architecture
+
+The codebase is structured as a Python package (`niim_tex/`) with a pluggable model system:
+
+- **`printer.py`** — `NiimbotPrinter` base class with all shared BLE communication, info queries, settings, and calibration commands (~300 lines of shared code)
+- **`models/d110.py`** — `D110Printer` subclass implementing the V4 print sequence (~100 lines)
+- **`models/__init__.py`** — Model registry with `get_printer(model)` factory function
+
+To add a new printer model, create a subclass of `NiimbotPrinter` in `models/`, implement `print_image()`, and register it in `models/__init__.py`.
+
 ## Protocol Notes
 
 The D110_M uses the `D110MV4PrintTask` protocol, which differs significantly from the standard D110:
@@ -165,3 +194,11 @@ Multi-device support is planned. The NIIMBOT printer lineup:
 **B-series (48mm / 384px printhead):** B1, B18, B21, B21S, B21 Pro
 
 Each model family uses a different print protocol variant. The goal is a unified Python driver with per-model print task implementations, similar to [niimprint](https://github.com/AndBondStyle/niimprint) but with the LaTeX template pipeline built in.
+
+### Contributing a new model
+
+1. Subclass `NiimbotPrinter` in `niim_tex/models/`
+2. Set `MODEL_PREFIXES`, `MAX_WIDTH_PX`, `MAX_DENSITY`
+3. Implement `async def print_image(...)`
+4. Register in `niim_tex/models/__init__.py`
+5. Open a PR with the model name and firmware version you tested on

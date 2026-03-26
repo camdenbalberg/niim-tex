@@ -1,0 +1,19 @@
+[project]
+name = "niim-tex"
+version = "0.2.0"
+description = "LaTeX-to-NIIMBOT label print pipeline with multi-device BLE support"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = [
+    "bleak>=0.21",
+    "Pillow>=10.0",
+]
+
+[project.scripts]
+niim-tex = "niim_tex.cli:main"
+niim-mosaic = "niim_tex.mosaic:main"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.backends._legacy:_Backend"
