@@ -1,5 +1,8 @@
 # niim-tex
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10+-green.svg)](https://python.org)
+
 Design labels in LaTeX with TikZ and print them directly to NIIMBOT thermal printers over BLE.
 
 Currently supports the **D110 / D110-M**. Multi-device support (D11, B21, B1, B18) is planned — see [Roadmap](#roadmap).

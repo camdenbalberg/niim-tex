@@ -5,11 +5,29 @@ description = "LaTeX-to-NIIMBOT label print pipeline with multi-device BLE suppo
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
+authors = [{name = "Camden Balberg"}]
+keywords = ["niimbot", "label", "latex", "thermal-printer", "ble", "bluetooth", "d110", "tikz"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Printing",
+    "Operating System :: OS Independent",
+]
 dependencies = [
     "bleak>=0.21",
     "Pillow>=10.0",
     "pillow-heif>=0.16",
 ]
+
+[project.urls]
+Homepage = "https://github.com/camdenbalberg/niim-tex"
+Repository = "https://github.com/camdenbalberg/niim-tex"
+Issues = "https://github.com/camdenbalberg/niim-tex/issues"
 
 [project.scripts]
 niim-tex = "niim_tex.cli:main"
