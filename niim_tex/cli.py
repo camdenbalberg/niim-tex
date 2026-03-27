@@ -12,7 +12,7 @@ import sys
 
 from PIL import Image
 
-from niim_tex import DPI, MM_PER_INCH, LABEL_SIZES, mm_to_px
+from niim_tex import DPI, MM_PER_INCH, LABEL_SIZES, CABLE_LABEL, PRINTABLE_HEIGHT_MM, is_cable_size, mm_to_px
 from niim_tex.protocol import LabelType, SoundType
 from niim_tex.models import get_printer
 
@@ -21,7 +21,16 @@ def list_sizes():
     print(f"{'Size':>10}  {'Width':>6}  {'Length':>7}  {'W (px)':>6}  {'L (px)':>7}  {'Note'}")
     print(f"{'':->10}  {'':->6}  {'':->7}  {'':->6}  {'':->7}  {'':->20}")
     for name, (w, l) in LABEL_SIZES.items():
-        note = "cable label" if "." in name else ""
+        if is_cable_size(name):
+            notes = {
+                "12.5x109": "cable: full label (flag + wrap)",
+                "12.5x74":  "cable: full flag (both halves)",
+                "12.5x37":  "cable: single flag half",
+                "12.5x35":  "cable: wrap portion",
+            }
+            note = notes.get(name, "cable label")
+        else:
+            note = ""
         print(f"{name:>10}  {w:>5}mm  {l:>5}mm  {mm_to_px(w):>6}  {mm_to_px(l):>7}  {note}")
 
 
@@ -43,15 +52,35 @@ def generate_tex(size_key, output_name=None):
         filename += ".tex"
 
     cable_comment = ""
-    if "." in size_key:
-        cable_comment = (
-            "% NOTE: This is a cable label (T12.5*74+35).\n"
-            "%   - The 74mm flag folds in half at the 37mm midpoint.\n"
-            "%   - Both halves stick together (non-sticky flag).\n"
-            "%   - The 35mm cable wrap portion is beyond this template.\n"
-            "%   - Consider designing for two mirrored halves,\n"
-            "%     or a single design centered on one half (37mm).\n"
-        )
+    if is_cable_size(size_key):
+        cable_comments = {
+            "12.5x109": (
+                "% NOTE: Cable label (T12.5*74+35) - FULL label.\n"
+                "%   - 0-37mm: front flag half (visible when folded)\n"
+                "%   - 37-74mm: back flag half (visible when folded)\n"
+                "%   - 74-109mm: cable wrap (wraps around cable)\n"
+                "%   - Use 'niim-tex cable' to assemble from halves instead.\n"
+            ),
+            "12.5x74": (
+                "% NOTE: Cable label (T12.5*74+35) - full flag portion.\n"
+                "%   - The 74mm flag folds in half at the 37mm midpoint.\n"
+                "%   - 0-37mm: front half, 37-74mm: back half.\n"
+                "%   - Both halves stick together (non-sticky flag).\n"
+                "%   - Use 'niim-tex cable' to assemble from halves instead.\n"
+            ),
+            "12.5x37": (
+                "% NOTE: Cable label (T12.5*74+35) - single flag half.\n"
+                "%   - This is one side of the flag (front or back).\n"
+                "%   - Use 'niim-tex cable --front this.tex' to auto-duplicate,\n"
+                "%     or --front a.tex --back b.tex for different sides.\n"
+            ),
+            "12.5x35": (
+                "% NOTE: Cable label (T12.5*74+35) - cable wrap portion.\n"
+                "%   - This wraps around the cable and sticks to itself.\n"
+                "%   - Printed text will be visible on the cable.\n"
+            ),
+        }
+        cable_comment = cable_comments.get(size_key, "")
 
     lines = [
         f"\\documentclass[10pt]{{article}}",
@@ -93,7 +122,7 @@ def interactive_new(output_name=None):
     print("Select a label size:")
     for i, name in enumerate(sizes, 1):
         w, l = LABEL_SIZES[name]
-        extra = " (cable)" if "." in name else ""
+        extra = " (cable)" if is_cable_size(name) else ""
         print(f"  {i}) {name}  ({w}mm x {l}mm){extra}")
 
     while True:
@@ -132,7 +161,191 @@ def find_label_size_for_geometry(pw, ph):
     return None, ph, pw  # unknown size, return as-is (ph=tape_w, pw=label_l)
 
 
-def run_print(tex_path, density=3, rotate=0, quantity=1, label_type=1, model=None):
+def compile_tex_to_png(tex_path, build_dir=None):
+    """Compile a .tex file to PNG. Returns (png_path, build_dir)."""
+    tex_path = os.path.abspath(tex_path)
+    base_name = os.path.splitext(os.path.basename(tex_path))[0]
+
+    if build_dir is None:
+        build_dir = os.path.join(os.getcwd(), "builds", base_name)
+    os.makedirs(build_dir, exist_ok=True)
+    pdf_path = os.path.join(build_dir, base_name + ".pdf")
+    png_path = os.path.join(build_dir, base_name + ".png")
+
+    print(f"Compiling {os.path.basename(tex_path)}...")
+    result = subprocess.run(
+        ["pdflatex", "-interaction=nonstopmode", "-halt-on-error",
+         f"-output-directory={build_dir}", tex_path],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        print("pdflatex failed:", file=sys.stderr)
+        lines = result.stdout.strip().split("\n")
+        for line in lines[-20:]:
+            print(f"  {line}", file=sys.stderr)
+        sys.exit(1)
+
+    if not os.path.isfile(pdf_path):
+        print(f"Error: pdflatex did not produce PDF", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Converting to PNG at {DPI} DPI...")
+    result = subprocess.run(
+        ["magick", "-density", str(DPI), pdf_path,
+         "-rotate", "90",
+         "-colorspace", "Gray", "-depth", "8",
+         png_path],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        print("ImageMagick conversion failed:", file=sys.stderr)
+        print(f"  {result.stderr.strip()}", file=sys.stderr)
+        sys.exit(1)
+
+    return png_path, build_dir
+
+
+def run_cable(front_path, back_path=None, wrap_path=None,
+              density=3, quantity=1, label_type=1, model=None, preview_only=False):
+    """Assemble and print a cable label from half-flag / flag / wrap components."""
+    # Check tools
+    for tool, hint in [("pdflatex", "Install a TeX distribution (e.g. MiKTeX or TeX Live)"),
+                       ("magick", "Install ImageMagick and add to PATH")]:
+        if not shutil.which(tool):
+            print(f"Error: '{tool}' not found in PATH. {hint}", file=sys.stderr)
+            sys.exit(1)
+
+    # Compile front
+    if not os.path.isfile(front_path):
+        print(f"Error: file not found: {front_path}", file=sys.stderr)
+        sys.exit(1)
+
+    build_dir = os.path.join(os.getcwd(), "builds", "cable_label")
+    os.makedirs(build_dir, exist_ok=True)
+
+    front_png, _ = compile_tex_to_png(front_path, build_dir)
+    front_img = Image.open(front_png)
+
+    # Detect if front is a full flag (74mm) or half flag (37mm)
+    front_pw, front_ph = parse_geometry_from_tex(front_path)
+    half_flag_h = mm_to_px(CABLE_LABEL["half_flag_length"])  # 296px
+    full_flag_h = mm_to_px(CABLE_LABEL["flag_length"])       # 592px
+    full_label_h = mm_to_px(CABLE_LABEL["total_length"])     # 872px
+    flag_w = mm_to_px(CABLE_LABEL["tape_width"])             # 100px (but print at 96px)
+    printable_w = mm_to_px(PRINTABLE_HEIGHT_MM)              # 96px
+
+    # After rotate 90, image is portrait: width=tape, height=length
+    img_h = front_img.height
+    img_w = front_img.width
+    tolerance = 10  # pixels
+
+    if back_path:
+        # Two separate halves → combine
+        if not os.path.isfile(back_path):
+            print(f"Error: file not found: {back_path}", file=sys.stderr)
+            sys.exit(1)
+        back_png, _ = compile_tex_to_png(back_path, build_dir)
+        back_img = Image.open(back_png)
+
+        print("Assembling cable label: front + back halves")
+        # Stack vertically: front on top, back on bottom (after rotation both are portrait)
+        flag_img = Image.new("L", (img_w, img_h + back_img.height), 255)
+        flag_img.paste(front_img, (0, 0))
+        flag_img.paste(back_img, (0, img_h))
+    elif abs(img_h - half_flag_h) < tolerance:
+        # Single half → duplicate for both sides
+        print("Assembling cable label: duplicating front half for back")
+        flag_img = Image.new("L", (img_w, img_h * 2), 255)
+        flag_img.paste(front_img, (0, 0))
+        flag_img.paste(front_img, (0, img_h))
+    elif abs(img_h - full_flag_h) < tolerance:
+        # Already a full flag
+        print("Cable label: full flag provided")
+        flag_img = front_img
+    elif abs(img_h - full_label_h) < tolerance:
+        # Full label (flag + wrap)
+        print("Cable label: full label provided (flag + wrap)")
+        flag_img = front_img
+    else:
+        print(f"Warning: front image is {img_h}px tall, expected ~{half_flag_h}px (half) "
+              f"or ~{full_flag_h}px (full flag) or ~{full_label_h}px (full label)")
+        flag_img = front_img
+
+    # Optionally append wrap
+    if wrap_path:
+        if not os.path.isfile(wrap_path):
+            print(f"Error: file not found: {wrap_path}", file=sys.stderr)
+            sys.exit(1)
+        wrap_png, _ = compile_tex_to_png(wrap_path, build_dir)
+        wrap_img = Image.open(wrap_png)
+        print(f"Appending cable wrap ({wrap_img.height}px)")
+        combined = Image.new("L", (flag_img.width, flag_img.height + wrap_img.height), 255)
+        combined.paste(flag_img, (0, 0))
+        combined.paste(wrap_img, (0, flag_img.height))
+        flag_img = combined
+
+    # Save assembled preview
+    preview_path = os.path.join(build_dir, "cable_assembled.png")
+    flag_img.save(preview_path)
+    print(f"Assembled cable label: {flag_img.width}x{flag_img.height}px")
+    print(f"Preview saved to {preview_path}")
+
+    if preview_only:
+        return
+
+    # Print
+    print("Sending to printer...")
+    printer = get_printer(model)
+    try:
+        name = asyncio.run(printer.connect())
+        print(f"Connected to {name}")
+        asyncio.run(printer.print_image(
+            flag_img,
+            density=density,
+            quantity=quantity,
+            label_type=label_type,
+        ))
+        print("Print job completed.")
+    except Exception as e:
+        print(f"Print failed: {e}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        asyncio.run(printer.disconnect())
+
+    print("Done.")
+
+
+def validate_roll(roll_size, actual_w, actual_h):
+    """Validate image dimensions against the specified roll size.
+    Returns True if valid, prints error and returns False if not."""
+    if roll_size not in LABEL_SIZES:
+        print(f"Error: unknown roll size '{roll_size}'", file=sys.stderr)
+        print(f"Options: {', '.join(LABEL_SIZES)}", file=sys.stderr)
+        return False
+
+    tape_w, label_l = LABEL_SIZES[roll_size]
+    # After 90° rotation, image is portrait: width=tape_w, height=label_l
+    expected_w = mm_to_px(min(tape_w, PRINTABLE_HEIGHT_MM))
+    expected_h = mm_to_px(label_l)
+    tolerance = 10  # pixels
+
+    if abs(actual_w - expected_w) > tolerance or abs(actual_h - expected_h) > tolerance:
+        print(f"Error: image is {actual_w}x{actual_h}px but roll '{roll_size}' "
+              f"expects ~{expected_w}x{expected_h}px", file=sys.stderr)
+        print(f"  Image:    {actual_w}x{actual_h}px "
+              f"({actual_w * MM_PER_INCH / DPI:.1f}mm x {actual_h * MM_PER_INCH / DPI:.1f}mm)",
+              file=sys.stderr)
+        print(f"  Roll:     {expected_w}x{expected_h}px "
+              f"({min(tape_w, PRINTABLE_HEIGHT_MM)}mm x {label_l}mm)",
+              file=sys.stderr)
+        if is_cable_size(roll_size):
+            print(f"  Hint: cable labels have multiple template sizes. "
+                  f"Run --list to see options, or use 'cable' subcommand.", file=sys.stderr)
+        return False
+    return True
+
+
+def run_print(tex_path, density=3, rotate=0, quantity=1, label_type=1, model=None, roll=None):
     if not os.path.isfile(tex_path):
         print(f"Error: file not found: {tex_path}", file=sys.stderr)
         sys.exit(1)
@@ -157,67 +370,31 @@ def run_print(tex_path, density=3, rotate=0, quantity=1, label_type=1, model=Non
     if pw and ph:
         size_name, tape_w, label_l = find_label_size_for_geometry(pw, ph)
 
-    # Structured build output directory
-    build_dir = os.path.join(os.getcwd(), "builds", base_name)
-    os.makedirs(build_dir, exist_ok=True)
-    pdf_path = os.path.join(build_dir, base_name + ".pdf")
-    png_path = os.path.join(build_dir, base_name + ".png")
-
-    # Step 1: pdflatex
-    print(f"Compiling {os.path.basename(tex_path)}...")
-    result = subprocess.run(
-        ["pdflatex", "-interaction=nonstopmode", "-halt-on-error",
-         f"-output-directory={build_dir}", tex_path],
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        print("pdflatex failed:", file=sys.stderr)
-        lines = result.stdout.strip().split("\n")
-        for line in lines[-20:]:
-            print(f"  {line}", file=sys.stderr)
-        sys.exit(1)
-
-    if not os.path.isfile(pdf_path):
-        print(f"Error: pdflatex did not produce PDF", file=sys.stderr)
-        sys.exit(1)
-
-    # Step 2: PDF -> PNG via ImageMagick
-    # Landscape PDF gets rotated 90 CW to portrait for the printer
-    print(f"Converting to PNG at {DPI} DPI...")
-    result = subprocess.run(
-        ["magick", "-density", str(DPI), pdf_path,
-         "-rotate", "90",
-         "-colorspace", "Gray", "-depth", "8",
-         png_path],
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        print("ImageMagick conversion failed:", file=sys.stderr)
-        print(f"  {result.stderr.strip()}", file=sys.stderr)
-        sys.exit(1)
+    # Use compile_tex_to_png helper
+    png_path, build_dir = compile_tex_to_png(tex_path)
 
     # Step 3: Sanity check dimensions
-    if tape_w and label_l:
+    img = Image.open(png_path)
+    actual_w, actual_h = img.width, img.height
+
+    # Validate against --roll if specified (hard error)
+    if roll:
+        if not validate_roll(roll, actual_w, actual_h):
+            sys.exit(1)
+        print(f"Roll validation OK: image matches {roll}")
+    elif tape_w and label_l:
+        # Soft warning from geometry parsing
         expected_w = mm_to_px(tape_w)
         expected_h = mm_to_px(label_l)
-        id_result = subprocess.run(
-            ["magick", "identify", "-format", "%w %h", png_path],
-            capture_output=True, text=True,
-        )
-        if id_result.returncode == 0:
-            parts = id_result.stdout.strip().split()
-            if len(parts) == 2:
-                actual_w, actual_h = int(parts[0]), int(parts[1])
-                tolerance = 5  # pixels
-                if abs(actual_w - expected_w) > tolerance or abs(actual_h - expected_h) > tolerance:
-                    print(f"Warning: image is {actual_w}x{actual_h}px, "
-                          f"expected ~{expected_w}x{expected_h}px for {size_name or f'{tape_w}x{label_l}mm'}")
+        tolerance = 5  # pixels
+        if abs(actual_w - expected_w) > tolerance or abs(actual_h - expected_h) > tolerance:
+            print(f"Warning: image is {actual_w}x{actual_h}px, "
+                  f"expected ~{expected_w}x{expected_h}px for {size_name or f'{tape_w}x{label_l}mm'}")
 
     print(f"Build output saved to {build_dir}/")
 
     # Step 4: Send to printer
     print("Sending to printer...")
-    img = Image.open(png_path)
 
     if rotate != 0:
         img = img.rotate(-rotate, expand=True)
@@ -433,6 +610,20 @@ def main():
     new_parser.add_argument("size", nargs="?", help="Label size (e.g. 15x50). Interactive if omitted.")
     new_parser.add_argument("--name", help="Output filename (default: label_WxH.tex)")
 
+    # cable
+    cable_parser = sub.add_parser("cable", help="Assemble and print cable labels from half-flag templates")
+    cable_parser.add_argument("--front", required=True, help="Front flag half .tex (or full flag/label)")
+    cable_parser.add_argument("--back", help="Back flag half .tex (omit to duplicate front)")
+    cable_parser.add_argument("--wrap", help="Cable wrap .tex (optional)")
+    cable_parser.add_argument("--density", type=int, default=3, choices=range(1, 6),
+                              metavar="N", help="Print density 1-5 (default: 3)")
+    cable_parser.add_argument("--quantity", type=int, default=1,
+                              metavar="N", help="Number of copies (default: 1)")
+    cable_parser.add_argument("--label-type", type=int, default=1, choices=[1, 2, 3, 5],
+                              metavar="T", help="Label type (default: 1)")
+    cable_parser.add_argument("--preview-only", action="store_true",
+                              help="Assemble and save preview without printing")
+
     # info
     sub.add_parser("info", help="Show printer info (battery, firmware, settings)")
 
@@ -453,6 +644,8 @@ def main():
                               metavar="N", help="Number of copies (default: 1)")
     print_parser.add_argument("--label-type", type=int, default=1, choices=[1, 2, 3, 5],
                               metavar="T", help="Label type: 1=gaps, 2=black mark, 3=continuous, 5=transparent (default: 1)")
+    print_parser.add_argument("--roll", type=str, default=None, metavar="SIZE",
+                              help=f"Loaded roll size (e.g. 12x40). Validates image dimensions before printing.")
 
     # feed
     sub.add_parser("feed", help="Feed paper to recalibrate label positioning")
@@ -485,7 +678,12 @@ def main():
         list_sizes()
         return
 
-    if args.command == "info":
+    if args.command == "cable":
+        run_cable(args.front, back_path=args.back, wrap_path=args.wrap,
+                  density=args.density, quantity=args.quantity,
+                  label_type=args.label_type, model=model,
+                  preview_only=args.preview_only)
+    elif args.command == "info":
         run_info(model)
     elif args.command == "rfid":
         run_rfid(model)
@@ -498,7 +696,8 @@ def main():
             interactive_new(args.name)
     elif args.command == "print":
         run_print(args.file, density=args.density, rotate=args.rotate,
-                  quantity=args.quantity, label_type=args.label_type, model=model)
+                  quantity=args.quantity, label_type=args.label_type, model=model,
+                  roll=args.roll)
     elif args.command == "feed":
         run_feed(model)
     elif args.command == "test-page":

@@ -1,0 +1,21 @@
+\documentclass[10pt]{article}
+\usepackage[paperwidth=75mm,paperheight=12mm,margin=0mm]{geometry}
+\usepackage{tikz}
+\pagestyle{empty}
+\topskip=0pt
+\parindent=0pt
+
+\begin{document}
+\noindent
+\begin{tikzpicture}[x=1mm,y=1mm]
+  \useasboundingbox (0,0) rectangle (75,12);
+  % Label: 12x75 (12mm tape x 75mm length, 12mm printable height)
+  % Canvas: (0,0) to (75,12)
+  % Print:  python niim_tex.py print 12x75.tex
+  %
+  % --- Your content below ---
+
+  \node[anchor=center] at (37.5,6.0) {Hello};
+
+\end{tikzpicture}
+\end{document}

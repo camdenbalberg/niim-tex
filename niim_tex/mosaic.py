@@ -223,7 +223,7 @@ def main():
     )
     parser.add_argument("image", help="Input image (jpg, png, etc.)")
     parser.add_argument("--size", default="12x40",
-                        help=f"Label size (default: 12x40). Options: {', '.join(LABEL_SIZES)}")
+                        help=f"Label size - must match loaded roll (default: 12x40). Options: {', '.join(LABEL_SIZES)}")
     parser.add_argument("--density", type=int, default=3, choices=range(1, 6),
                         metavar="N", help="Print darkness 1-5 (default: 3)")
     parser.add_argument("--model", type=str, default=None,

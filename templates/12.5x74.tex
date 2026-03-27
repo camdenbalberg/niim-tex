@@ -13,12 +13,11 @@
   % Canvas: (0,0) to (74,12)
   % Print:  python niim_tex.py print 12.5x74.tex
   %
-% NOTE: This is a cable label (T12.5*74+35).
+% NOTE: Cable label (T12.5*74+35) - full flag portion.
 %   - The 74mm flag folds in half at the 37mm midpoint.
+%   - 0-37mm: front half, 37-74mm: back half.
 %   - Both halves stick together (non-sticky flag).
-%   - The 35mm cable wrap portion is beyond this template.
-%   - Consider designing for two mirrored halves,
-%     or a single design centered on one half (37mm).
+%   - Use 'niim-tex cable' to assemble from halves instead.
   % --- Your content below ---
 
   \node[anchor=center] at (37.0,6.0) {Hello};

@@ -1,0 +1,26 @@
+\documentclass[10pt]{article}
+\usepackage[paperwidth=109mm,paperheight=12mm,margin=0mm]{geometry}
+\usepackage{tikz}
+\pagestyle{empty}
+\topskip=0pt
+\parindent=0pt
+
+\begin{document}
+\noindent
+\begin{tikzpicture}[x=1mm,y=1mm]
+  \useasboundingbox (0,0) rectangle (109,12);
+  % Label: 12.5x109 (12.5mm tape x 109mm length, 12mm printable height)
+  % Canvas: (0,0) to (109,12)
+  % Print:  python niim_tex.py print 12.5x109.tex
+  %
+% NOTE: Cable label (T12.5*74+35) - FULL label.
+%   - 0-37mm: front flag half (visible when folded)
+%   - 37-74mm: back flag half (visible when folded)
+%   - 74-109mm: cable wrap (wraps around cable)
+%   - Use 'niim-tex cable' to assemble from halves instead.
+  % --- Your content below ---
+
+  \node[anchor=center] at (54.5,6.0) {Hello};
+
+\end{tikzpicture}
+\end{document}

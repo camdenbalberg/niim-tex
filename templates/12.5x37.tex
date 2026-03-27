@@ -1,0 +1,25 @@
+\documentclass[10pt]{article}
+\usepackage[paperwidth=37mm,paperheight=12mm,margin=0mm]{geometry}
+\usepackage{tikz}
+\pagestyle{empty}
+\topskip=0pt
+\parindent=0pt
+
+\begin{document}
+\noindent
+\begin{tikzpicture}[x=1mm,y=1mm]
+  \useasboundingbox (0,0) rectangle (37,12);
+  % Label: 12.5x37 (12.5mm tape x 37mm length, 12mm printable height)
+  % Canvas: (0,0) to (37,12)
+  % Print:  python niim_tex.py print 12.5x37.tex
+  %
+% NOTE: Cable label (T12.5*74+35) - single flag half.
+%   - This is one side of the flag (front or back).
+%   - Use 'niim-tex cable --front this.tex' to auto-duplicate,
+%     or --front a.tex --back b.tex for different sides.
+  % --- Your content below ---
+
+  \node[anchor=center] at (18.5,6.0) {Hello};
+
+\end{tikzpicture}
+\end{document}
