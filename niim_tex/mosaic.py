@@ -73,36 +73,43 @@ def _strip_usage(strip):
     return black / total
 
 
-def _calc_tight_fit(img_w, img_h, canvas_w, strip_h_px, tolerance):
-    """Find the minimum force_height N where the image fills >= (1-tolerance) of canvas width.
+def _calc_tight_fit(img_w, img_h, strip_w_px, strip_h_px, tolerance, max_width=10):
+    """Find the optimal grid width (columns) that minimizes bottom-row waste.
 
-    When fitting an image into a canvas preserving aspect ratio, the height
-    determines whether the image fills the width or leaves horizontal whitespace.
-    This finds the smallest N rows such that the image's width usage is acceptable.
+    For each candidate column count, calculates how many rows the image needs
+    when resized to fill the width. The "waste" is the unused portion of the
+    last strip row. Returns the column count where the last row is most full.
 
-    Returns (n_rows, width_usage) where width_usage is the fraction of canvas
-    width actually used (1.0 = perfect fill).
+    Returns (grid_width, n_rows, last_row_usage) where last_row_usage is
+    the fraction of the last row's height used by image content (1.0 = perfect).
     """
-    import math
-    # Ideal (fractional) rows needed for the image to exactly fill the width
-    ideal_rows = canvas_w * img_h / (img_w * strip_h_px)
+    best_width = 1
+    best_rows = 1
+    best_usage = 0.0
 
-    # Try floor first (fewer labels), check if width usage is acceptable
-    n_floor = max(1, math.floor(ideal_rows))
-    canvas_h_floor = n_floor * strip_h_px
-    fit_ratio_floor = min(canvas_w / img_w, canvas_h_floor / img_h)
-    usage_floor = (img_w * fit_ratio_floor) / canvas_w
+    for w in range(1, max_width + 1):
+        canvas_w = w * strip_w_px
+        ratio = canvas_w / img_w
+        canvas_h = round(img_h * ratio)
 
-    if usage_floor >= (1.0 - tolerance):
-        return n_floor, usage_floor
+        remainder = canvas_h % strip_h_px
+        if remainder == 0:
+            usage = 1.0
+        else:
+            usage = remainder / strip_h_px
 
-    # Floor wasn't good enough, use ceil (guarantees width is fully filled)
-    n_ceil = max(1, math.ceil(ideal_rows))
-    canvas_h_ceil = n_ceil * strip_h_px
-    fit_ratio_ceil = min(canvas_w / img_w, canvas_h_ceil / img_h)
-    usage_ceil = (img_w * fit_ratio_ceil) / canvas_w
+        n_rows = -(-canvas_h // strip_h_px)  # ceil division
 
-    return n_ceil, usage_ceil
+        if usage > best_usage:
+            best_usage = usage
+            best_width = w
+            best_rows = n_rows
+
+        # Good enough — stop searching
+        if usage >= (1.0 - tolerance):
+            return w, n_rows, usage
+
+    return best_width, best_rows, best_usage
 
 
 def prepare_image(path, label_size, grid_width=1, force_height=None,
@@ -113,22 +120,24 @@ def prepare_image(path, label_size, grid_width=1, force_height=None,
     Args:
         crop_bottom: If set, remove the last row if its black pixel usage is
                      below this fraction (e.g. 0.2 = remove if <20% used).
-        tight_fit:   If set (float), auto-calculate force_height N so the image
-                     fills the canvas width within this tolerance (e.g. 0.05 = 5%).
+        tight_fit:   If set (float), auto-calculate the optimal grid width (columns)
+                     so the bottom row is filled within this tolerance (e.g. 0.05 = 5%).
     """
     tape_w, label_l = label_size
     strip_h_px = mm_to_px(PRINTABLE_HEIGHT_MM)  # 96px per strip row
     strip_w_px = mm_to_px(label_l)
 
-    canvas_w = grid_width * strip_w_px
-
     img = open_image(path).convert("RGB")
 
-    # --tight-fit: auto-calculate force_height from image aspect ratio
-    if tight_fit is not None and force_height is None:
-        n_rows, usage = _calc_tight_fit(img.width, img.height, canvas_w, strip_h_px, tight_fit)
-        print(f"Tight fit: {n_rows} rows, {usage:.1%} width usage (tolerance: {tight_fit:.0%})")
-        force_height = n_rows
+    # --tight-fit: auto-calculate optimal column count
+    if tight_fit is not None:
+        opt_w, opt_rows, usage = _calc_tight_fit(
+            img.width, img.height, strip_w_px, strip_h_px, tight_fit)
+        print(f"Tight fit: {opt_w} columns x {opt_rows} rows, "
+              f"last row {usage:.1%} filled (tolerance: {tight_fit:.0%})")
+        grid_width = opt_w
+
+    canvas_w = grid_width * strip_w_px
 
     if force_height is not None:
         canvas_h = force_height * strip_h_px
@@ -342,7 +351,7 @@ def main():
                         help="Remove last row if below usage threshold (default: 0.2 = 20%%)")
     parser.add_argument("--tight-fit", type=float, nargs="?", const=0.05, default=None,
                         metavar="PCT",
-                        help="Auto-calculate row count to fill label width (default tolerance: 0.05 = 5%%)")
+                        help="Auto-calculate optimal column count to minimize bottom-row waste (default tolerance: 0.05 = 5%%)")
     parser.add_argument("--verbose", action="store_true",
                         help="Show detailed BLE debug output (heartbeat polling, timing)")
 
@@ -365,8 +374,8 @@ def main():
         print("Error: --force-height must be >= 1", file=sys.stderr)
         sys.exit(1)
 
-    if args.tight_fit is not None and args.force_height is not None:
-        print("Error: --tight-fit and --force-height are mutually exclusive", file=sys.stderr)
+    if args.tight_fit is not None and args.width != 1:
+        print("Error: --tight-fit and --width are mutually exclusive (tight-fit calculates width)", file=sys.stderr)
         sys.exit(1)
 
     force_ar = None

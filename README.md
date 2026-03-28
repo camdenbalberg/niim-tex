@@ -165,8 +165,8 @@ python mosaic.py photo.jpg --no-dither --threshold 128  # hard B&W threshold
 python mosaic.py photo.jpg --width 2                 # 2 labels wide
 python mosaic.py photo.jpg --width 3 --force-height 4  # exact 3x4 grid
 python mosaic.py photo.jpg --force-aspect-ratio 1:1  # force square output
-python mosaic.py photo.jpg --tight-fit               # auto-calc rows to fill width
-python mosaic.py photo.jpg --tight-fit 0.1           # allow 10% width waste
+python mosaic.py photo.jpg --tight-fit               # auto-calc columns to fill bottom row
+python mosaic.py photo.jpg --tight-fit 0.1           # allow 10% bottom-row waste
 python mosaic.py photo.jpg --crop-bottom             # drop last row if <20% used
 python mosaic.py photo.jpg --crop-bottom 0.1         # drop last row if <10% used
 python mosaic.py photo.jpg --verbose                 # BLE debug output
@@ -180,7 +180,7 @@ python mosaic.py photo.jpg --verbose                 # BLE debug output
 - `--width M` — Number of labels wide (default: 1). Height auto-calculated from aspect ratio
 - `--force-height N` — Force number of label rows
 - `--force-aspect-ratio W:H` — Force output aspect ratio (e.g. `16:9`, `1:1`). Stretches image to fit
-- `--tight-fit [PCT]` — Auto-calculate the optimal row count so the image fills the label width with minimal waste (default tolerance: `0.05` = 5%). Mutually exclusive with `--force-height`
+- `--tight-fit [PCT]` — Auto-calculate the optimal column count so the bottom row of labels is filled with minimal waste (default tolerance: `0.05` = 5%). Mutually exclusive with `--width`
 - `--verbose` — Show detailed BLE debug output (heartbeat polling, timing between prints)
 - `--crop-bottom [PCT]` — Remove last row of strips if black pixel usage is below threshold (default: `0.2` = 20%). Saves a label when the bottom row is mostly empty
 - `--dither` / `--no-dither` — Floyd-Steinberg dithering (default) or hard threshold
