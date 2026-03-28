@@ -70,18 +70,101 @@ RFID_BARCODE_DB = {
 RFID_COUNT_FACTOR = 1.2
 
 
+def _query_niimbot_cloud(barcode):
+    """Query the NIIMBOT cloud API to resolve an unknown barcode.
+
+    Returns a dict matching RFID_BARCODE_DB format, or None on failure.
+    """
+    import json
+    import re
+    import urllib.request
+    import urllib.error
+
+    url = "https://print.niimbot.com/api/template/getCloudTemplateByOneCode"
+    headers = {
+        "Content-Type": "application/json",
+        "niimbot-user-agent": "AppVersionName/999.0.0",
+    }
+    body = json.dumps({"oneCode": barcode}).encode()
+
+    try:
+        req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read())
+    except Exception:
+        return None
+
+    if data.get("code") != 1 or "data" not in data:
+        return None
+
+    d = data["data"]
+    width = d.get("width")    # label length in mm
+    height = d.get("height")  # tape width in mm
+    is_cable = d.get("isCable", False)
+    cable_len = d.get("cableLength", 0)
+
+    if not width or not height:
+        return None
+
+    tape_w = float(height)
+    label_l = float(width)
+
+    # Extract model name from English label name
+    model = ""
+    for n in d.get("labelNames", []):
+        if n.get("languageCode") == "en":
+            model = n.get("name", "")
+            break
+
+    # Parse count from model name (e.g. "T15*50-125WHITE" -> 125)
+    count = None
+    m = re.search(r"-(\d+)", model)
+    if m:
+        count = int(m.group(1))
+
+    # Build size key
+    size_key = f"{tape_w:g}x{label_l:g}"
+
+    entry = {"size_key": size_key, "model": model, "count": count}
+    if is_cable:
+        entry["is_cable"] = True
+        if cable_len:
+            entry["cable_length"] = int(cable_len)
+
+    return entry
+
+
 def lookup_rfid_barcode(barcode):
     """Look up label info from an RFID barcode string.
 
+    Checks the local DB first, then falls back to the NIIMBOT cloud API.
+    Successfully resolved cloud lookups are cached in the local DB for
+    future use (within the same process).
+
     Returns a dict with size_key, model, count, tape_width, label_length, is_cable,
-    or None if the barcode is unknown.
+    or None if the barcode can't be resolved.
     """
     entry = RFID_BARCODE_DB.get(barcode)
+
+    # Cloud API fallback
+    if not entry:
+        entry = _query_niimbot_cloud(barcode)
+        if entry:
+            # Cache for future lookups in this session
+            RFID_BARCODE_DB[barcode] = entry
+
     if not entry:
         return None
 
     size_key = entry["size_key"]
-    tape_w, label_l = LABEL_SIZES[size_key]
+
+    # Get dimensions from LABEL_SIZES if available, otherwise parse from size_key
+    if size_key in LABEL_SIZES:
+        tape_w, label_l = LABEL_SIZES[size_key]
+    else:
+        parts = size_key.split("x")
+        tape_w = float(parts[0])
+        label_l = float(parts[1])
 
     return {
         "size_key": size_key,
