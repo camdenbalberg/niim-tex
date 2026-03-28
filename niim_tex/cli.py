@@ -345,7 +345,7 @@ def validate_roll(roll_size, actual_w, actual_h):
     return True
 
 
-def run_print(tex_path, density=3, rotate=0, quantity=1, label_type=1, model=None, roll=None, fit=False):
+def run_print(tex_path, density=3, rotate=0, quantity=1, label_type=1, model=None, roll=None, fit=False, no_stretch=False):
     if not os.path.isfile(tex_path):
         print(f"Error: file not found: {tex_path}", file=sys.stderr)
         sys.exit(1)
@@ -386,8 +386,21 @@ def run_print(tex_path, density=3, rotate=0, quantity=1, label_type=1, model=Non
             target_w = mm_to_px(min(fit_tw, PRINTABLE_HEIGHT_MM))
             target_h = mm_to_px(fit_ll)
             if actual_w != target_w or actual_h != target_h:
-                print(f"Fitting image: {actual_w}x{actual_h}px -> {target_w}x{target_h}px")
-                img = img.resize((target_w, target_h), Image.LANCZOS)
+                if no_stretch:
+                    # Preserve aspect ratio: scale to fit within target, center
+                    scale = min(target_w / actual_w, target_h / actual_h)
+                    new_w = round(actual_w * scale)
+                    new_h = round(actual_h * scale)
+                    print(f"Fitting image (no-stretch): {actual_w}x{actual_h}px -> {new_w}x{new_h}px (centered in {target_w}x{target_h}px)")
+                    resized = img.resize((new_w, new_h), Image.LANCZOS)
+                    canvas = Image.new("RGBA", (target_w, target_h), (255, 255, 255, 0))
+                    paste_x = (target_w - new_w) // 2
+                    paste_y = (target_h - new_h) // 2
+                    canvas.paste(resized, (paste_x, paste_y))
+                    img = canvas.convert("L")
+                else:
+                    print(f"Fitting image: {actual_w}x{actual_h}px -> {target_w}x{target_h}px")
+                    img = img.resize((target_w, target_h), Image.LANCZOS)
                 actual_w, actual_h = target_w, target_h
         else:
             print("Warning: --fit requires --roll or a recognized .tex geometry to know the target size",
@@ -700,6 +713,8 @@ def main():
                               help=f"Loaded roll size (e.g. 12x40). Validates image dimensions before printing.")
     print_parser.add_argument("--fit", action="store_true",
                               help="Resize image to fit the label (uses --roll or .tex geometry for target size)")
+    print_parser.add_argument("--no-stretch", action="store_true",
+                              help="With --fit: preserve aspect ratio and center instead of stretching")
 
     # feed
     sub.add_parser("feed", help="Feed paper to recalibrate label positioning")
@@ -751,7 +766,7 @@ def main():
     elif args.command == "print":
         run_print(args.file, density=args.density, rotate=args.rotate,
                   quantity=args.quantity, label_type=args.label_type, model=model,
-                  roll=args.roll, fit=args.fit)
+                  roll=args.roll, fit=args.fit, no_stretch=args.no_stretch)
     elif args.command == "feed":
         run_feed(model)
     elif args.command == "test-page":

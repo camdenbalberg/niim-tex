@@ -103,6 +103,7 @@ python niim_tex.py print label.tex --density 3 --quantity 2 --rotate 0 --label-t
 - `--label-type T` — 1=gaps, 2=black mark, 3=continuous, 5=transparent (default: 1)
 - `--roll SIZE` — Manually specify loaded roll size (e.g. `12x40`). Validates image dimensions before printing. If omitted, the roll is auto-detected from the RFID tag
 - `--fit` — Resize the compiled image to fit the label dimensions (target size from `--roll` or `.tex` geometry)
+- `--no-stretch` — With `--fit`: preserve aspect ratio and center the image instead of stretching to fill
 
 ## Roll Detection
 
