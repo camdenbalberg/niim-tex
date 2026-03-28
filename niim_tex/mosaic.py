@@ -73,15 +73,48 @@ def _strip_usage(strip):
     return black / total
 
 
+def _calc_tight_fit(img_w, img_h, canvas_w, strip_h_px, tolerance):
+    """Find the minimum force_height N where the image fills >= (1-tolerance) of canvas width.
+
+    When fitting an image into a canvas preserving aspect ratio, the height
+    determines whether the image fills the width or leaves horizontal whitespace.
+    This finds the smallest N rows such that the image's width usage is acceptable.
+
+    Returns (n_rows, width_usage) where width_usage is the fraction of canvas
+    width actually used (1.0 = perfect fill).
+    """
+    import math
+    # Ideal (fractional) rows needed for the image to exactly fill the width
+    ideal_rows = canvas_w * img_h / (img_w * strip_h_px)
+
+    # Try floor first (fewer labels), check if width usage is acceptable
+    n_floor = max(1, math.floor(ideal_rows))
+    canvas_h_floor = n_floor * strip_h_px
+    fit_ratio_floor = min(canvas_w / img_w, canvas_h_floor / img_h)
+    usage_floor = (img_w * fit_ratio_floor) / canvas_w
+
+    if usage_floor >= (1.0 - tolerance):
+        return n_floor, usage_floor
+
+    # Floor wasn't good enough, use ceil (guarantees width is fully filled)
+    n_ceil = max(1, math.ceil(ideal_rows))
+    canvas_h_ceil = n_ceil * strip_h_px
+    fit_ratio_ceil = min(canvas_w / img_w, canvas_h_ceil / img_h)
+    usage_ceil = (img_w * fit_ratio_ceil) / canvas_w
+
+    return n_ceil, usage_ceil
+
+
 def prepare_image(path, label_size, grid_width=1, force_height=None,
                   force_aspect_ratio=None, dither=True, threshold=128,
-                  crop_bottom=None, tight_fit=False):
+                  crop_bottom=None, tight_fit=None):
     """Load, resize, convert to B&W, and slice into label grid strips.
 
     Args:
         crop_bottom: If set, remove the last row if its black pixel usage is
                      below this fraction (e.g. 0.2 = remove if <20% used).
-        tight_fit:   Resize image to exactly fill whole rows (no bottom padding).
+        tight_fit:   If set (float), auto-calculate force_height N so the image
+                     fills the canvas width within this tolerance (e.g. 0.05 = 5%).
     """
     tape_w, label_l = label_size
     strip_h_px = mm_to_px(PRINTABLE_HEIGHT_MM)  # 96px per strip row
@@ -90,6 +123,12 @@ def prepare_image(path, label_size, grid_width=1, force_height=None,
     canvas_w = grid_width * strip_w_px
 
     img = open_image(path).convert("RGB")
+
+    # --tight-fit: auto-calculate force_height from image aspect ratio
+    if tight_fit is not None and force_height is None:
+        n_rows, usage = _calc_tight_fit(img.width, img.height, canvas_w, strip_h_px, tight_fit)
+        print(f"Tight fit: {n_rows} rows, {usage:.1%} width usage (tolerance: {tight_fit:.0%})")
+        force_height = n_rows
 
     if force_height is not None:
         canvas_h = force_height * strip_h_px
@@ -115,19 +154,11 @@ def prepare_image(path, label_size, grid_width=1, force_height=None,
             canvas_h = round(img.height * ratio)
             img = img.resize((canvas_w, canvas_h), Image.LANCZOS)
 
-        if tight_fit:
-            # Resize to exactly fill whole rows — no padding needed
-            n_rows = max(1, round(img.height / strip_h_px))
-            target_h = n_rows * strip_h_px
-            if img.height != target_h:
-                print(f"Tight fit: resizing height {img.height}px -> {target_h}px ({n_rows} rows)")
-                img = img.resize((canvas_w, target_h), Image.LANCZOS)
-        else:
-            # Pad height to multiple of strip height (white at bottom)
-            remainder = img.height % strip_h_px
-            if remainder:
-                pad = strip_h_px - remainder
-                img = ImageOps.expand(img, border=(0, 0, 0, pad), fill="white")
+        # Pad height to multiple of strip height (white at bottom)
+        remainder = img.height % strip_h_px
+        if remainder:
+            pad = strip_h_px - remainder
+            img = ImageOps.expand(img, border=(0, 0, 0, pad), fill="white")
 
     # Convert to B&W
     img = img.convert("L")
@@ -214,7 +245,7 @@ def save_preview(strips, output_path, grid_shape=None):
     print(f"Preview saved to {output_path}")
 
 
-async def print_strips(strip_paths, density=3, model=None, expected_size=None):
+async def print_strips(strip_paths, density=3, model=None, expected_size=None, verbose=False):
     """Connect to printer and print the given strip image files."""
     printer = get_printer(model)
     try:
@@ -253,7 +284,7 @@ async def print_strips(strip_paths, density=3, model=None, expected_size=None):
 
             # Wait for printer to be ready before next print
             if idx < total - 1:
-                await printer.wait_ready()
+                await printer.wait_ready(verbose=verbose)
 
         print("All strips printed.")
     finally:
@@ -306,8 +337,11 @@ def main():
     parser.add_argument("--crop-bottom", type=float, nargs="?", const=0.2, default=None,
                         metavar="PCT",
                         help="Remove last row if below usage threshold (default: 0.2 = 20%%)")
-    parser.add_argument("--tight-fit", action="store_true",
-                        help="Resize image to exactly fill whole rows (no bottom whitespace padding)")
+    parser.add_argument("--tight-fit", type=float, nargs="?", const=0.05, default=None,
+                        metavar="PCT",
+                        help="Auto-calculate row count to fill label width (default tolerance: 0.05 = 5%%)")
+    parser.add_argument("--verbose", action="store_true",
+                        help="Show detailed BLE debug output (heartbeat polling, timing)")
 
     args = parser.parse_args()
 
@@ -326,6 +360,10 @@ def main():
 
     if args.force_height is not None and args.force_height < 1:
         print("Error: --force-height must be >= 1", file=sys.stderr)
+        sys.exit(1)
+
+    if args.tight_fit is not None and args.force_height is not None:
+        print("Error: --tight-fit and --force-height are mutually exclusive", file=sys.stderr)
         sys.exit(1)
 
     force_ar = None
@@ -372,7 +410,7 @@ def main():
                     print(f"Error: {p} not found. Re-run without --strips to regenerate.", file=sys.stderr)
                     sys.exit(1)
             print(f"Reprinting strips {', '.join(str(s) for s in selected)} from {out_dir}/")
-            asyncio.run(print_strips(paths, density=args.density, model=args.model, expected_size=args.size))
+            asyncio.run(print_strips(paths, density=args.density, model=args.model, expected_size=args.size, verbose=args.verbose))
             return
 
     strips, full_img, grid_shape = prepare_image(
@@ -414,7 +452,7 @@ def main():
         selected = list(range(1, n + 1))
 
     paths = [os.path.join(out_dir, f"strip{s}{ext}") for s in selected]
-    asyncio.run(print_strips(paths, density=args.density, model=args.model))
+    asyncio.run(print_strips(paths, density=args.density, model=args.model, expected_size=args.size, verbose=args.verbose))
 
 
 if __name__ == "__main__":
