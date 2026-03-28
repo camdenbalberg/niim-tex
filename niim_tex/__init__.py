@@ -55,6 +55,60 @@ def is_cable_size(size_key):
     return size_key in CABLE_LABEL["sizes"]
 
 
+def parse_rfid_barcode(barcode):
+    """Parse an RFID barcode string like 'T15*50-125' or 'T12.5*74+35-60'.
+
+    Returns a dict with:
+        tape_width:   float (mm)
+        label_length: float (mm)  — for cable labels, this is the flag length
+        wrap_length:  float or None (mm) — cable wrap portion
+        total_length: float (mm) — full printable length (label + wrap)
+        count:        int or None — labels per roll
+        is_cable:     bool
+        size_key:     str — matching LABEL_SIZES key (e.g. '15x50')
+    Returns None if the barcode can't be parsed.
+    """
+    import re
+    # Format: T<width>*<length>[+<wrap>][-<count>][<suffix>]
+    m = re.match(
+        r"^T([\d.]+)\*([\d.]+)(?:\+([\d.]+))?(?:-([\d]+))?",
+        barcode.strip(),
+    )
+    if not m:
+        return None
+
+    tape_w = float(m.group(1))
+    label_l = float(m.group(2))
+    wrap_l = float(m.group(3)) if m.group(3) else None
+    count = int(m.group(4)) if m.group(4) else None
+    total_l = label_l + (wrap_l or 0)
+
+    # Find matching size key
+    # For cable labels, the primary size is tape_width x label_length (flag)
+    def _fmt(w, l):
+        ws = f"{w:g}"
+        ls = f"{l:g}"
+        return f"{ws}x{ls}"
+
+    size_key = _fmt(tape_w, label_l)
+    if size_key not in LABEL_SIZES:
+        # Try total length for cable labels
+        if wrap_l:
+            alt = _fmt(tape_w, total_l)
+            if alt in LABEL_SIZES:
+                size_key = alt
+
+    return {
+        "tape_width": tape_w,
+        "label_length": label_l,
+        "wrap_length": wrap_l,
+        "total_length": total_l,
+        "count": count,
+        "is_cable": wrap_l is not None,
+        "size_key": size_key,
+    }
+
+
 def mm_to_px(mm):
     """Convert millimeters to pixels at NIIMBOT DPI (203)."""
     return round(mm * DPI / MM_PER_INCH)

@@ -12,7 +12,7 @@ import sys
 
 from PIL import Image
 
-from niim_tex import DPI, MM_PER_INCH, LABEL_SIZES, CABLE_LABEL, PRINTABLE_HEIGHT_MM, is_cable_size, mm_to_px
+from niim_tex import DPI, MM_PER_INCH, LABEL_SIZES, CABLE_LABEL, PRINTABLE_HEIGHT_MM, is_cable_size, parse_rfid_barcode, mm_to_px
 from niim_tex.protocol import LabelType, SoundType
 from niim_tex.models import get_printer
 
@@ -403,6 +403,27 @@ def run_print(tex_path, density=3, rotate=0, quantity=1, label_type=1, model=Non
     try:
         name = asyncio.run(printer.connect())
         print(f"Connected to {name}")
+
+        # Auto-detect roll from RFID if --roll not specified
+        if not roll:
+            try:
+                rfid = asyncio.run(printer.get_rfid())
+                if rfid and rfid.get("barcode"):
+                    parsed = parse_rfid_barcode(rfid["barcode"])
+                    if parsed:
+                        roll = parsed["size_key"]
+                        print(f"RFID detected: {rfid['barcode']} -> {roll} "
+                              f"({parsed['tape_width']}x{parsed['label_length']}mm, "
+                              f"{rfid['remaining_labels']} remaining)")
+            except Exception:
+                pass  # RFID read failed, continue without validation
+
+        # Validate image against detected/specified roll
+        if roll:
+            if not validate_roll(roll, actual_w, actual_h):
+                sys.exit(1)
+            print(f"Roll validation OK: image matches {roll}")
+
         asyncio.run(printer.print_image(
             img,
             density=density,
@@ -466,6 +487,21 @@ def run_rfid(model=None):
             print(f"  Used:       {rfid['used_labels']} labels")
             print(f"  Remaining:  {rfid['remaining_labels']} labels")
             print(f"  Type:       {rfid['type']}")
+
+            # Parse label dimensions from barcode
+            parsed = parse_rfid_barcode(rfid["barcode"])
+            if parsed:
+                print(f"\n  Detected label:")
+                print(f"    Tape width:    {parsed['tape_width']}mm")
+                print(f"    Label length:  {parsed['label_length']}mm")
+                if parsed["is_cable"]:
+                    print(f"    Wrap length:   {parsed['wrap_length']}mm")
+                    print(f"    Total length:  {parsed['total_length']}mm")
+                    print(f"    Type:          cable label")
+                if parsed["size_key"] in LABEL_SIZES:
+                    print(f"    Size key:      {parsed['size_key']}")
+                else:
+                    print(f"    Size key:      {parsed['size_key']} (not in LABEL_SIZES)")
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
