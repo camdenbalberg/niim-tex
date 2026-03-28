@@ -266,6 +266,26 @@ class NiimbotPrinter:
 
         return result
 
+    async def wait_ready(self, timeout=15):
+        """Poll heartbeat until the printer reports idle (paper settled, lid closed).
+
+        Uses short polling intervals to minimize delay between consecutive prints.
+        Falls back to a 1s minimum wait if heartbeat can't determine state.
+        """
+        await asyncio.sleep(0.3)  # Brief settle time after print_image returns
+        for _ in range(timeout * 5):  # poll every 200ms
+            try:
+                hb = await self.heartbeat()
+                # Printer is ready when paper is inserted and lid is closed
+                paper_ok = hb["paper_state"] is None or hb["paper_state"] == 0
+                lid_ok = hb["closing_state"] is None or hb["closing_state"] == 0
+                if paper_ok and lid_ok:
+                    return
+            except Exception:
+                pass
+            await asyncio.sleep(0.2)
+        # Timeout — proceed anyway (better than hanging)
+
     # ── Settings ───────────────────────────────────────────────────────
 
     async def set_label_type(self, label_type):

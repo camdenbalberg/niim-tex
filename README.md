@@ -102,6 +102,7 @@ python niim_tex.py print label.tex --density 3 --quantity 2 --rotate 0 --label-t
 - `--rotate DEG` — Additional rotation: 0, 90, 180, 270 (default: 0)
 - `--label-type T` — 1=gaps, 2=black mark, 3=continuous, 5=transparent (default: 1)
 - `--roll SIZE` — Manually specify loaded roll size (e.g. `12x40`). Validates image dimensions before printing. If omitted, the roll is auto-detected from the RFID tag
+- `--fit` — Resize the compiled image to fit the label dimensions (target size from `--roll` or `.tex` geometry)
 
 ## Roll Detection
 
@@ -163,6 +164,9 @@ python mosaic.py photo.jpg --no-dither --threshold 128  # hard B&W threshold
 python mosaic.py photo.jpg --width 2                 # 2 labels wide
 python mosaic.py photo.jpg --width 3 --force-height 4  # exact 3x4 grid
 python mosaic.py photo.jpg --force-aspect-ratio 1:1  # force square output
+python mosaic.py photo.jpg --tight-fit               # no bottom whitespace
+python mosaic.py photo.jpg --crop-bottom             # drop last row if <20% used
+python mosaic.py photo.jpg --crop-bottom 0.1         # drop last row if <10% used
 ```
 
 ### Mosaic Options
@@ -173,6 +177,8 @@ python mosaic.py photo.jpg --force-aspect-ratio 1:1  # force square output
 - `--width M` — Number of labels wide (default: 1). Height auto-calculated from aspect ratio
 - `--force-height N` — Force number of label rows
 - `--force-aspect-ratio W:H` — Force output aspect ratio (e.g. `16:9`, `1:1`). Stretches image to fit
+- `--tight-fit` — Resize image to exactly fill whole rows (no bottom whitespace padding)
+- `--crop-bottom [PCT]` — Remove last row of strips if black pixel usage is below threshold (default: `0.2` = 20%). Saves a label when the bottom row is mostly empty
 - `--dither` / `--no-dither` — Floyd-Steinberg dithering (default) or hard threshold
 - `--threshold N` — B&W threshold 0-255, used with `--no-dither` (default: 128)
 - `--preview-only` — Generate strips and preview without printing

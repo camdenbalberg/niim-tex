@@ -62,9 +62,27 @@ def get_output_dir(image_path):
     return out_dir
 
 
+def _strip_usage(strip):
+    """Return the fraction of black pixels in a 1-bit strip (0.0 = all white, 1.0 = all black)."""
+    # In mode "1", getcolors returns [(count, 0), (count, 255)] or subset
+    total = strip.width * strip.height
+    colors = strip.convert("L").getcolors()
+    if not colors:
+        return 0.0
+    black = sum(count for count, val in colors if val < 128)
+    return black / total
+
+
 def prepare_image(path, label_size, grid_width=1, force_height=None,
-                  force_aspect_ratio=None, dither=True, threshold=128):
-    """Load, resize, convert to B&W, and slice into label grid strips."""
+                  force_aspect_ratio=None, dither=True, threshold=128,
+                  crop_bottom=None, tight_fit=False):
+    """Load, resize, convert to B&W, and slice into label grid strips.
+
+    Args:
+        crop_bottom: If set, remove the last row if its black pixel usage is
+                     below this fraction (e.g. 0.2 = remove if <20% used).
+        tight_fit:   Resize image to exactly fill whole rows (no bottom padding).
+    """
     tape_w, label_l = label_size
     strip_h_px = mm_to_px(PRINTABLE_HEIGHT_MM)  # 96px per strip row
     strip_w_px = mm_to_px(label_l)
@@ -97,11 +115,19 @@ def prepare_image(path, label_size, grid_width=1, force_height=None,
             canvas_h = round(img.height * ratio)
             img = img.resize((canvas_w, canvas_h), Image.LANCZOS)
 
-        # Pad height to multiple of strip height (white at bottom)
-        remainder = img.height % strip_h_px
-        if remainder:
-            pad = strip_h_px - remainder
-            img = ImageOps.expand(img, border=(0, 0, 0, pad), fill="white")
+        if tight_fit:
+            # Resize to exactly fill whole rows — no padding needed
+            n_rows = max(1, round(img.height / strip_h_px))
+            target_h = n_rows * strip_h_px
+            if img.height != target_h:
+                print(f"Tight fit: resizing height {img.height}px -> {target_h}px ({n_rows} rows)")
+                img = img.resize((canvas_w, target_h), Image.LANCZOS)
+        else:
+            # Pad height to multiple of strip height (white at bottom)
+            remainder = img.height % strip_h_px
+            if remainder:
+                pad = strip_h_px - remainder
+                img = ImageOps.expand(img, border=(0, 0, 0, pad), fill="white")
 
     # Convert to B&W
     img = img.convert("L")
@@ -119,6 +145,17 @@ def prepare_image(path, label_size, grid_width=1, force_height=None,
             y0 = row * strip_h_px
             strip = img.crop((x0, y0, x0 + strip_w_px, y0 + strip_h_px))
             strips.append(strip)
+
+    # --crop-bottom: remove last row if usage is below threshold
+    if crop_bottom is not None and n_rows > 1:
+        last_row_strips = strips[-(grid_width):]
+        avg_usage = sum(_strip_usage(s) for s in last_row_strips) / len(last_row_strips)
+        if avg_usage < crop_bottom:
+            print(f"Cropping bottom row: {avg_usage:.1%} used (threshold: {crop_bottom:.0%})")
+            strips = strips[:-(grid_width)]
+            n_rows -= 1
+            # Crop the full image too for consistent preview
+            img = img.crop((0, 0, img.width, n_rows * strip_h_px))
 
     return strips, img, (n_rows, grid_width)
 
@@ -214,9 +251,9 @@ async def print_strips(strip_paths, density=3, model=None, expected_size=None):
             await printer.print_image(rotated, density=density)
             print(f"  {strip_num} done.")
 
-            # Wait for printer to advance past the label gap before next job
+            # Wait for printer to be ready before next print
             if idx < total - 1:
-                await asyncio.sleep(2)
+                await printer.wait_ready()
 
         print("All strips printed.")
     finally:
@@ -266,6 +303,11 @@ def main():
                         help="Force number of label rows (may leave unused label width)")
     parser.add_argument("--force-aspect-ratio", type=str, default=None, metavar="W:H",
                         help="Force output aspect ratio (e.g. 16:9, 1:1). Stretches image to fit")
+    parser.add_argument("--crop-bottom", type=float, nargs="?", const=0.2, default=None,
+                        metavar="PCT",
+                        help="Remove last row if below usage threshold (default: 0.2 = 20%%)")
+    parser.add_argument("--tight-fit", action="store_true",
+                        help="Resize image to exactly fill whole rows (no bottom whitespace padding)")
 
     args = parser.parse_args()
 
@@ -339,6 +381,8 @@ def main():
         force_height=args.force_height,
         force_aspect_ratio=force_ar,
         dither=args.dither, threshold=args.threshold,
+        crop_bottom=args.crop_bottom,
+        tight_fit=args.tight_fit,
     )
 
     n_rows, n_cols = grid_shape

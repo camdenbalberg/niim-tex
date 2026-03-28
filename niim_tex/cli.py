@@ -345,7 +345,7 @@ def validate_roll(roll_size, actual_w, actual_h):
     return True
 
 
-def run_print(tex_path, density=3, rotate=0, quantity=1, label_type=1, model=None, roll=None):
+def run_print(tex_path, density=3, rotate=0, quantity=1, label_type=1, model=None, roll=None, fit=False):
     if not os.path.isfile(tex_path):
         print(f"Error: file not found: {tex_path}", file=sys.stderr)
         sys.exit(1)
@@ -376,6 +376,22 @@ def run_print(tex_path, density=3, rotate=0, quantity=1, label_type=1, model=Non
     # Step 3: Sanity check dimensions
     img = Image.open(png_path)
     actual_w, actual_h = img.width, img.height
+
+    # --fit: resize image to match label dimensions
+    if fit:
+        # Determine target from --roll, geometry, or fail
+        fit_size = roll or size_name
+        if fit_size and fit_size in LABEL_SIZES:
+            fit_tw, fit_ll = LABEL_SIZES[fit_size]
+            target_w = mm_to_px(min(fit_tw, PRINTABLE_HEIGHT_MM))
+            target_h = mm_to_px(fit_ll)
+            if actual_w != target_w or actual_h != target_h:
+                print(f"Fitting image: {actual_w}x{actual_h}px -> {target_w}x{target_h}px")
+                img = img.resize((target_w, target_h), Image.LANCZOS)
+                actual_w, actual_h = target_w, target_h
+        else:
+            print("Warning: --fit requires --roll or a recognized .tex geometry to know the target size",
+                  file=sys.stderr)
 
     # Validate against --roll if specified (hard error)
     if roll:
@@ -682,6 +698,8 @@ def main():
                               metavar="T", help="Label type: 1=gaps, 2=black mark, 3=continuous, 5=transparent (default: 1)")
     print_parser.add_argument("--roll", type=str, default=None, metavar="SIZE",
                               help=f"Loaded roll size (e.g. 12x40). Validates image dimensions before printing.")
+    print_parser.add_argument("--fit", action="store_true",
+                              help="Resize image to fit the label (uses --roll or .tex geometry for target size)")
 
     # feed
     sub.add_parser("feed", help="Feed paper to recalibrate label positioning")
@@ -733,7 +751,7 @@ def main():
     elif args.command == "print":
         run_print(args.file, density=args.density, rotate=args.rotate,
                   quantity=args.quantity, label_type=args.label_type, model=model,
-                  roll=args.roll)
+                  roll=args.roll, fit=args.fit)
     elif args.command == "feed":
         run_feed(model)
     elif args.command == "test-page":
