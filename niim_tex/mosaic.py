@@ -254,7 +254,7 @@ def save_preview(strips, output_path, grid_shape=None):
     print(f"Preview saved to {output_path}")
 
 
-async def print_strips(strip_paths, density=3, model=None, expected_size=None, verbose=False):
+async def print_strips(strip_paths, density=3, model=None, expected_size=None, verbose=False, delay=1.0):
     """Connect to printer and print the given strip image files."""
     printer = get_printer(model)
     try:
@@ -294,9 +294,9 @@ async def print_strips(strip_paths, density=3, model=None, expected_size=None, v
             await printer.print_image(rotated, density=density)
             print(f"  {strip_num} done.")
 
-            # Wait for printer to be ready before next print
+            # Wait for paper advance before next print
             if idx < total - 1:
-                await printer.wait_ready(verbose=verbose)
+                await printer.wait_ready(delay=delay, verbose=verbose)
 
         print("All strips printed.")
     finally:
@@ -352,8 +352,10 @@ def main():
     parser.add_argument("--tight-fit", type=float, nargs="?", const=0.05, default=None,
                         metavar="PCT",
                         help="Auto-calculate optimal column count to minimize bottom-row waste (default tolerance: 0.05 = 5%%)")
+    parser.add_argument("--delay", type=float, default=1.0, metavar="SEC",
+                        help="Seconds to wait between prints for paper advance (default: 1.0)")
     parser.add_argument("--verbose", action="store_true",
-                        help="Show detailed BLE debug output (heartbeat polling, timing)")
+                        help="Show detailed debug output (timing between prints)")
 
     args = parser.parse_args()
 
@@ -422,7 +424,7 @@ def main():
                     print(f"Error: {p} not found. Re-run without --strips to regenerate.", file=sys.stderr)
                     sys.exit(1)
             print(f"Reprinting strips {', '.join(str(s) for s in selected)} from {out_dir}/")
-            asyncio.run(print_strips(paths, density=args.density, model=args.model, expected_size=args.size, verbose=args.verbose))
+            asyncio.run(print_strips(paths, density=args.density, model=args.model, expected_size=args.size, verbose=args.verbose, delay=args.delay))
             return
 
     strips, full_img, grid_shape = prepare_image(

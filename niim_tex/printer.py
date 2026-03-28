@@ -266,42 +266,27 @@ class NiimbotPrinter:
 
         return result
 
-    async def wait_ready(self, timeout=15, verbose=False):
-        """Poll heartbeat until the printer reports idle (paper settled, lid closed).
+    async def wait_ready(self, delay=1.0, verbose=False):
+        """Wait between consecutive prints.
 
-        Uses short polling intervals to minimize delay between consecutive prints.
-        Falls back after timeout (better than hanging).
+        The D110_M heartbeat (10 bytes) does not contain a usable busy/ready
+        signal — byte[8] is always 0x01 regardless of printer state, and
+        paper_state is not populated. So we use a fixed delay instead of
+        polling. The delay gives the printer time to feed paper past the
+        label gap before the next print job starts.
+
+        The print_image() method already polls print status (0xA3) until the
+        page is done and sends endPrint, so the printer is finished printing
+        by the time this is called. This delay only covers the physical paper
+        advance.
 
         Args:
-            verbose: If True, print each heartbeat poll for debugging.
+            delay: Seconds to wait (default 1.0). Tune with --delay flag.
+            verbose: If True, log the wait.
         """
-        import time
-        t0 = time.monotonic()
-        await asyncio.sleep(0.3)  # Brief settle time after print_image returns
-        polls = 0
-        for _ in range(timeout * 5):  # poll every 200ms
-            polls += 1
-            try:
-                hb = await self.heartbeat()
-                paper_ok = hb["paper_state"] is None or hb["paper_state"] == 0
-                lid_ok = hb["closing_state"] is None or hb["closing_state"] == 0
-                if verbose:
-                    elapsed = time.monotonic() - t0
-                    print(f"  [wait_ready {elapsed:.2f}s] poll={polls} "
-                          f"paper={hb['paper_state']} lid={hb['closing_state']} "
-                          f"power={hb['power_level']} raw={hb['raw']}")
-                if paper_ok and lid_ok:
-                    if verbose:
-                        print(f"  [wait_ready] ready after {time.monotonic() - t0:.2f}s ({polls} polls)")
-                    return
-            except Exception as e:
-                if verbose:
-                    print(f"  [wait_ready {time.monotonic() - t0:.2f}s] poll={polls} error: {e}")
-            await asyncio.sleep(0.2)
-        elapsed = time.monotonic() - t0
         if verbose:
-            print(f"  [wait_ready] TIMEOUT after {elapsed:.2f}s ({polls} polls)")
-        # Timeout — proceed anyway (better than hanging)
+            print(f"  [wait_ready] waiting {delay:.1f}s for paper advance...")
+        await asyncio.sleep(delay)
 
     # ── Settings ───────────────────────────────────────────────────────
 
