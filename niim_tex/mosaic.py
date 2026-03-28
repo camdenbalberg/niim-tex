@@ -18,7 +18,7 @@ try:
 except ImportError:
     pass
 
-from niim_tex import LABEL_SIZES, PRINTABLE_HEIGHT_MM, parse_rfid_barcode, mm_to_px
+from niim_tex import LABEL_SIZES, PRINTABLE_HEIGHT_MM, lookup_rfid_barcode, correct_rfid_count, mm_to_px
 from niim_tex.models import get_printer
 
 
@@ -256,19 +256,22 @@ async def print_strips(strip_paths, density=3, model=None, expected_size=None, v
         try:
             rfid = await printer.get_rfid()
             if rfid and rfid.get("barcode"):
-                parsed = parse_rfid_barcode(rfid["barcode"])
-                if parsed:
-                    detected = parsed["size_key"]
-                    print(f"RFID detected: {rfid['barcode']} -> {detected} "
-                          f"({parsed['tape_width']}x{parsed['label_length']}mm, "
-                          f"{rfid['remaining_labels']} remaining)")
+                info = lookup_rfid_barcode(rfid["barcode"])
+                if info:
+                    detected = info["size_key"]
+                    remaining = correct_rfid_count(rfid["remaining_labels"])
+                    print(f"RFID detected: {info['model']} -> {detected} "
+                          f"({info['tape_width']}x{info['label_length']}mm, "
+                          f"~{remaining} remaining)")
                     if expected_size and expected_size != detected:
                         tape_w_exp, label_l_exp = LABEL_SIZES[expected_size]
                         print(f"Error: --size is {expected_size} "
                               f"({tape_w_exp}x{label_l_exp}mm) but loaded roll "
-                              f"is {detected} ({parsed['tape_width']}x{parsed['label_length']}mm)")
+                              f"is {detected} ({info['tape_width']}x{info['label_length']}mm)")
                         print("Use --size matching the loaded roll, or swap the roll.")
                         return
+                else:
+                    print(f"RFID barcode unknown: {rfid['barcode']} (skipping roll validation)")
         except Exception:
             pass  # RFID read failed, continue without validation
 

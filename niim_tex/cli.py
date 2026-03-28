@@ -12,7 +12,7 @@ import sys
 
 from PIL import Image
 
-from niim_tex import DPI, MM_PER_INCH, LABEL_SIZES, CABLE_LABEL, PRINTABLE_HEIGHT_MM, is_cable_size, parse_rfid_barcode, mm_to_px
+from niim_tex import DPI, MM_PER_INCH, LABEL_SIZES, CABLE_LABEL, PRINTABLE_HEIGHT_MM, RFID_COUNT_FACTOR, is_cable_size, lookup_rfid_barcode, correct_rfid_count, mm_to_px
 from niim_tex.protocol import LabelType, SoundType
 from niim_tex.models import get_printer
 
@@ -438,12 +438,15 @@ def run_print(tex_path, density=3, rotate=0, quantity=1, label_type=1, model=Non
             try:
                 rfid = asyncio.run(printer.get_rfid())
                 if rfid and rfid.get("barcode"):
-                    parsed = parse_rfid_barcode(rfid["barcode"])
-                    if parsed:
-                        roll = parsed["size_key"]
-                        print(f"RFID detected: {rfid['barcode']} -> {roll} "
-                              f"({parsed['tape_width']}x{parsed['label_length']}mm, "
-                              f"{rfid['remaining_labels']} remaining)")
+                    info = lookup_rfid_barcode(rfid["barcode"])
+                    if info:
+                        roll = info["size_key"]
+                        remaining = correct_rfid_count(rfid["remaining_labels"])
+                        print(f"RFID detected: {info['model']} -> {roll} "
+                              f"({info['tape_width']}x{info['label_length']}mm, "
+                              f"~{remaining} remaining)")
+                    else:
+                        print(f"RFID barcode unknown: {rfid['barcode']} (skipping auto-detection)")
             except Exception:
                 pass  # RFID read failed, continue without validation
 
@@ -512,25 +515,26 @@ def run_rfid(model=None):
             print(f"  UUID:       {rfid['uuid']}")
             print(f"  Barcode:    {rfid['barcode']}")
             print(f"  Serial:     {rfid['serial']}")
-            print(f"  Total:      {rfid['total_labels']} labels")
-            print(f"  Used:       {rfid['used_labels']} labels")
-            print(f"  Remaining:  {rfid['remaining_labels']} labels")
+
+            # Correct the 1.2x inflated counts from RFID
+            real_total = correct_rfid_count(rfid['total_labels'])
+            real_used = correct_rfid_count(rfid['used_labels'])
+            real_remaining = real_total - real_used
+            print(f"  Total:      {real_total} labels (RFID raw: {rfid['total_labels']})")
+            print(f"  Used:       {real_used} labels")
+            print(f"  Remaining:  {real_remaining} labels")
             print(f"  Type:       {rfid['type']}")
 
-            # Parse label dimensions from barcode
-            parsed = parse_rfid_barcode(rfid["barcode"])
-            if parsed:
-                print(f"\n  Detected label:")
-                print(f"    Tape width:    {parsed['tape_width']}mm")
-                print(f"    Label length:  {parsed['label_length']}mm")
-                if parsed["is_cable"]:
-                    print(f"    Wrap length:   {parsed['wrap_length']}mm")
-                    print(f"    Total length:  {parsed['total_length']}mm")
+            # Look up label dimensions from barcode
+            info = lookup_rfid_barcode(rfid["barcode"])
+            if info:
+                print(f"\n  Detected label: {info['model']}")
+                print(f"    Size:          {info['size_key']} ({info['tape_width']}mm x {info['label_length']}mm)")
+                if info["is_cable"]:
                     print(f"    Type:          cable label")
-                if parsed["size_key"] in LABEL_SIZES:
-                    print(f"    Size key:      {parsed['size_key']}")
-                else:
-                    print(f"    Size key:      {parsed['size_key']} (not in LABEL_SIZES)")
+            else:
+                print(f"\n  Unknown barcode: {rfid['barcode']}")
+                print(f"    Add this barcode to RFID_BARCODE_DB in niim_tex/__init__.py")
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
