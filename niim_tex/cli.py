@@ -359,8 +359,11 @@ def run_print(tex_path, density=3, rotate=0, quantity=1, label_type=1, model=Non
         sys.exit(1)
 
     if not tex_path.endswith(".tex"):
-        print(f"Error: expected a .tex file, got: {tex_path}", file=sys.stderr)
-        sys.exit(1)
+        # Non-.tex file — route through image pipeline
+        run_image(tex_path, density=density, rotate=rotate, quantity=quantity,
+                  label_type=label_type, model=model, roll=roll,
+                  no_stretch=no_stretch, align=align)
+        return
 
     # Check tools
     for tool, hint in [("pdflatex", "Install a TeX distribution (e.g. MiKTeX or TeX Live)"),
