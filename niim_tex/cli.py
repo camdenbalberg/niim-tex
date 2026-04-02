@@ -521,31 +521,17 @@ def open_image(path):
         raise
 
 
-def run_image(image_path, density=3, rotate=0, quantity=1, label_type=1,
-              model=None, roll=None, dither=True, threshold=128,
-              no_stretch=False, align=None):
-    """Print any image file directly on a NIIMBOT label."""
-    if not os.path.isfile(image_path):
-        print(f"Error: file not found: {image_path}", file=sys.stderr)
-        sys.exit(1)
-
-    # Open image (supports all Pillow formats + ImageMagick fallback)
-    img = open_image(image_path)
-    print(f"Opened {os.path.basename(image_path)}: {img.width}x{img.height}px, mode={img.mode}")
-
-    # Convert to greyscale
-    img = img.convert("L")
-
-    # Connect to printer to auto-detect roll if needed
-    printer = get_printer(model)
+async def _run_image_async(img, printer, roll, density, rotate, quantity, label_type,
+                           dither, threshold, no_stretch, align):
+    """Async core for run_image — runs all printer calls in a single event loop."""
     try:
-        name = asyncio.run(printer.connect())
+        name = await printer.connect()
         print(f"Connected to {name}")
 
         # Auto-detect roll from RFID if --roll not specified
         if not roll:
             try:
-                rfid = asyncio.run(printer.get_rfid())
+                rfid = await printer.get_rfid()
                 if rfid and rfid.get("barcode"):
                     info = lookup_rfid_barcode(rfid["barcode"])
                     if info:
@@ -611,12 +597,12 @@ def run_image(image_path, density=3, rotate=0, quantity=1, label_type=1,
             img = img.rotate(-rotate, expand=True)
 
         print("Sending to printer...")
-        asyncio.run(printer.print_image(
+        await printer.print_image(
             img,
             density=density,
             quantity=quantity,
             label_type=label_type,
-        ))
+        )
         print("Print job completed.")
     except SystemExit:
         raise
@@ -624,9 +610,33 @@ def run_image(image_path, density=3, rotate=0, quantity=1, label_type=1,
         print(f"Print failed: {e}", file=sys.stderr)
         sys.exit(1)
     finally:
-        asyncio.run(printer.disconnect())
+        await printer.disconnect()
 
     print("Done.")
+
+
+def run_image(image_path, density=3, rotate=0, quantity=1, label_type=1,
+              model=None, roll=None, dither=True, threshold=128,
+              no_stretch=False, align=None):
+    """Print any image file directly on a NIIMBOT label."""
+    if not os.path.isfile(image_path):
+        print(f"Error: file not found: {image_path}", file=sys.stderr)
+        sys.exit(1)
+
+    # Open image (supports all Pillow formats + ImageMagick fallback)
+    img = open_image(image_path)
+    print(f"Opened {os.path.basename(image_path)}: {img.width}x{img.height}px, mode={img.mode}")
+
+    # Convert to greyscale
+    img = img.convert("L")
+
+    # Run all printer interaction in a single event loop to avoid
+    # asyncio.Event bound-to-different-loop errors
+    printer = get_printer(model)
+    asyncio.run(_run_image_async(
+        img, printer, roll, density, rotate, quantity, label_type,
+        dither, threshold, no_stretch, align,
+    ))
 
 
 def run_info(model=None):
