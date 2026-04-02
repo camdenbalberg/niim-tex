@@ -9,8 +9,16 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 
-from PIL import Image
+from PIL import Image, ImageOps
+
+# Register AVIF/HEIF support if pillow-heif is installed
+try:
+    import pillow_heif
+    pillow_heif.register_heif_opener()
+except ImportError:
+    pass
 
 from niim_tex import DPI, MM_PER_INCH, LABEL_SIZES, CABLE_LABEL, PRINTABLE_HEIGHT_MM, RFID_COUNT_FACTOR, is_cable_size, lookup_rfid_barcode, correct_rfid_count, mm_to_px
 from niim_tex.protocol import LabelType, SoundType
@@ -345,7 +353,7 @@ def validate_roll(roll_size, actual_w, actual_h):
     return True
 
 
-def run_print(tex_path, density=3, rotate=0, quantity=1, label_type=1, model=None, roll=None, fit=False, no_stretch=False):
+def run_print(tex_path, density=3, rotate=0, quantity=1, label_type=1, model=None, roll=None, fit=False, no_stretch=False, align=None):
     if not os.path.isfile(tex_path):
         print(f"Error: file not found: {tex_path}", file=sys.stderr)
         sys.exit(1)
@@ -391,11 +399,17 @@ def run_print(tex_path, density=3, rotate=0, quantity=1, label_type=1, model=Non
                     scale = min(target_w / actual_w, target_h / actual_h)
                     new_w = round(actual_w * scale)
                     new_h = round(actual_h * scale)
-                    print(f"Fitting image (no-stretch): {actual_w}x{actual_h}px -> {new_w}x{new_h}px (centered in {target_w}x{target_h}px)")
+                    align_label = align or "center"
+                    print(f"Fitting image (no-stretch, {align_label}): {actual_w}x{actual_h}px -> {new_w}x{new_h}px (in {target_w}x{target_h}px)")
                     resized = img.resize((new_w, new_h), Image.LANCZOS)
                     canvas = Image.new("RGBA", (target_w, target_h), (255, 255, 255, 0))
-                    paste_x = (target_w - new_w) // 2
-                    paste_y = (target_h - new_h) // 2
+                    paste_x = (target_w - new_w) // 2  # always center width
+                    if align == "start":
+                        paste_y = 0
+                    elif align == "end":
+                        paste_y = target_h - new_h
+                    else:
+                        paste_y = (target_h - new_h) // 2
                     canvas.paste(resized, (paste_x, paste_y))
                     img = canvas.convert("L")
                 else:
@@ -463,6 +477,146 @@ def run_print(tex_path, density=3, rotate=0, quantity=1, label_type=1, model=Non
             label_type=label_type,
         ))
         print("Print job completed.")
+    except Exception as e:
+        print(f"Print failed: {e}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        asyncio.run(printer.disconnect())
+
+    print("Done.")
+
+
+def open_image(path):
+    """Open an image file, falling back to ImageMagick for unsupported formats."""
+    try:
+        return Image.open(path)
+    except Exception:
+        pass
+
+    # Fallback: use ImageMagick to convert to PNG
+    if not shutil.which("magick"):
+        raise RuntimeError(
+            f"Cannot open '{os.path.basename(path)}' — Pillow doesn't support this format "
+            "and ImageMagick ('magick') is not on PATH for fallback conversion."
+        )
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+    tmp.close()
+    try:
+        result = subprocess.run(
+            ["magick", path, tmp.name],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"ImageMagick failed to convert '{os.path.basename(path)}': {result.stderr.strip()}"
+            )
+        print(f"Converted {os.path.basename(path)} via ImageMagick")
+        return Image.open(tmp.name)
+    except Exception:
+        os.unlink(tmp.name)
+        raise
+
+
+def run_image(image_path, density=3, rotate=0, quantity=1, label_type=1,
+              model=None, roll=None, dither=True, threshold=128,
+              no_stretch=False, align=None):
+    """Print any image file directly on a NIIMBOT label."""
+    if not os.path.isfile(image_path):
+        print(f"Error: file not found: {image_path}", file=sys.stderr)
+        sys.exit(1)
+
+    # Open image (supports all Pillow formats + ImageMagick fallback)
+    img = open_image(image_path)
+    print(f"Opened {os.path.basename(image_path)}: {img.width}x{img.height}px, mode={img.mode}")
+
+    # Convert to greyscale
+    img = img.convert("L")
+
+    # Connect to printer to auto-detect roll if needed
+    printer = get_printer(model)
+    try:
+        name = asyncio.run(printer.connect())
+        print(f"Connected to {name}")
+
+        # Auto-detect roll from RFID if --roll not specified
+        if not roll:
+            try:
+                rfid = asyncio.run(printer.get_rfid())
+                if rfid and rfid.get("barcode"):
+                    info = lookup_rfid_barcode(rfid["barcode"])
+                    if info:
+                        roll = info["size_key"]
+                        remaining = correct_rfid_count(rfid["remaining_labels"])
+                        print(f"RFID detected: {info['model']} -> {roll} "
+                              f"({info['tape_width']}x{info['label_length']}mm, "
+                              f"~{remaining} remaining)")
+                    else:
+                        print(f"RFID barcode unknown: {rfid['barcode']} (skipping auto-detection)")
+            except Exception:
+                pass  # RFID read failed, continue without validation
+
+        if not roll:
+            print("Error: label size required. Use --roll SIZE or load an RFID-tagged roll.", file=sys.stderr)
+            print(f"Options: {', '.join(LABEL_SIZES)}", file=sys.stderr)
+            sys.exit(1)
+
+        if roll not in LABEL_SIZES:
+            print(f"Error: unknown roll size '{roll}'", file=sys.stderr)
+            print(f"Options: {', '.join(LABEL_SIZES)}", file=sys.stderr)
+            sys.exit(1)
+
+        tape_w, label_l = LABEL_SIZES[roll]
+        # After 90° rotation: width=printable height, height=label length
+        target_w = mm_to_px(min(tape_w, PRINTABLE_HEIGHT_MM))
+        target_h = mm_to_px(label_l)
+        print(f"Target label: {roll} ({target_w}x{target_h}px, "
+              f"{min(tape_w, PRINTABLE_HEIGHT_MM)}mm x {label_l}mm)")
+
+        # Resize to fit label
+        if no_stretch:
+            # Preserve aspect ratio, center on white canvas
+            scale = min(target_w / img.width, target_h / img.height)
+            new_w = round(img.width * scale)
+            new_h = round(img.height * scale)
+            align_label = align or "center"
+            print(f"Resizing (no-stretch, {align_label}): {img.width}x{img.height}px -> "
+                  f"{new_w}x{new_h}px (in {target_w}x{target_h}px)")
+            resized = img.resize((new_w, new_h), Image.LANCZOS)
+            canvas = Image.new("L", (target_w, target_h), 255)
+            paste_x = (target_w - new_w) // 2
+            if align == "start":
+                paste_y = 0
+            elif align == "end":
+                paste_y = target_h - new_h
+            else:
+                paste_y = (target_h - new_h) // 2
+            canvas.paste(resized, (paste_x, paste_y))
+            img = canvas
+        else:
+            print(f"Resizing: {img.width}x{img.height}px -> {target_w}x{target_h}px")
+            img = img.resize((target_w, target_h), Image.LANCZOS)
+
+        # Convert to black & white
+        if dither:
+            img = img.convert("1")  # Floyd-Steinberg dithering
+        else:
+            img = img.point(lambda x: 255 if x > threshold else 0, "1")
+
+        # Apply rotation if requested
+        if rotate != 0:
+            img = img.rotate(-rotate, expand=True)
+
+        print("Sending to printer...")
+        asyncio.run(printer.print_image(
+            img,
+            density=density,
+            quantity=quantity,
+            label_type=label_type,
+        ))
+        print("Print job completed.")
+    except SystemExit:
+        raise
     except Exception as e:
         print(f"Print failed: {e}", file=sys.stderr)
         sys.exit(1)
@@ -719,6 +873,32 @@ def main():
                               help="Resize image to fit the label (uses --roll or .tex geometry for target size)")
     print_parser.add_argument("--no-stretch", action="store_true",
                               help="With --fit: preserve aspect ratio and center instead of stretching")
+    print_parser.add_argument("--align", type=str, default=None, choices=["start", "center", "end"],
+                              help="With --fit --no-stretch: align content within label (start/center/end, default: center)")
+
+    # image
+    image_parser = sub.add_parser("image", help="Print any image file (auto-converts to greyscale)")
+    image_parser.add_argument("file", help="Path to image file (png, jpg, bmp, gif, tiff, webp, avif, heif, ...)")
+    image_parser.add_argument("--roll", type=str, default=None, metavar="SIZE",
+                              help=f"Label roll size (e.g. 12x40). Auto-detected from RFID if omitted.")
+    image_parser.add_argument("--density", type=int, default=3, choices=range(1, 6),
+                              metavar="N", help="Print density 1-5 (default: 3)")
+    image_parser.add_argument("--rotate", type=int, default=0, choices=[0, 90, 180, 270],
+                              metavar="DEG", help="Additional rotation (default: 0)")
+    image_parser.add_argument("--quantity", type=int, default=1,
+                              metavar="N", help="Number of copies (default: 1)")
+    image_parser.add_argument("--label-type", type=int, default=1, choices=[1, 2, 3, 5],
+                              metavar="T", help="Label type: 1=gaps, 2=black mark, 3=continuous, 5=transparent (default: 1)")
+    image_parser.add_argument("--dither", action="store_true", default=True,
+                              help="Use Floyd-Steinberg dithering for B&W conversion (default)")
+    image_parser.add_argument("--no-dither", dest="dither", action="store_false",
+                              help="Use hard threshold instead of dithering")
+    image_parser.add_argument("--threshold", type=int, default=128, metavar="N",
+                              help="B&W threshold 0-255, used with --no-dither (default: 128)")
+    image_parser.add_argument("--no-stretch", action="store_true",
+                              help="Preserve aspect ratio and center instead of stretching to fill")
+    image_parser.add_argument("--align", type=str, default=None, choices=["start", "center", "end"],
+                              help="With --no-stretch: align content within label (default: center)")
 
     # feed
     sub.add_parser("feed", help="Feed paper to recalibrate label positioning")
@@ -770,7 +950,12 @@ def main():
     elif args.command == "print":
         run_print(args.file, density=args.density, rotate=args.rotate,
                   quantity=args.quantity, label_type=args.label_type, model=model,
-                  roll=args.roll, fit=args.fit, no_stretch=args.no_stretch)
+                  roll=args.roll, fit=args.fit, no_stretch=args.no_stretch, align=args.align)
+    elif args.command == "image":
+        run_image(args.file, density=args.density, rotate=args.rotate,
+                  quantity=args.quantity, label_type=args.label_type, model=model,
+                  roll=args.roll, dither=args.dither, threshold=args.threshold,
+                  no_stretch=args.no_stretch, align=args.align)
     elif args.command == "feed":
         run_feed(model)
     elif args.command == "test-page":
