@@ -523,6 +523,13 @@ def open_image(path):
 
 def _prepare_label_image(img, target_w, target_h, dither, threshold, rotate, no_stretch, align):
     """Resize, convert to B&W, and rotate a greyscale image for label printing."""
+    # Auto-rotate so the image's long edge aligns with the label's long edge
+    img_landscape = img.width > img.height
+    target_landscape = target_w > target_h
+    if img_landscape != target_landscape and img.width != img.height:
+        img = img.rotate(-90, expand=True)
+        print(f"  Auto-rotated to match label orientation: {img.width}x{img.height}px")
+
     if no_stretch:
         scale = min(target_w / img.width, target_h / img.height)
         new_w = round(img.width * scale)
