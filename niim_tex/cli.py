@@ -354,16 +354,16 @@ def validate_roll(roll_size, actual_w, actual_h):
 
 
 def run_print(tex_path, density=3, rotate=0, quantity=1, label_type=1, model=None, roll=None, fit=False, no_stretch=False, align=None):
-    if not os.path.isfile(tex_path):
-        print(f"Error: file not found: {tex_path}", file=sys.stderr)
-        sys.exit(1)
-
-    if not tex_path.endswith(".tex"):
-        # Non-.tex file — route through image pipeline
+    if os.path.isdir(tex_path) or (os.path.isfile(tex_path) and not tex_path.endswith(".tex")):
+        # Non-.tex file or directory — route through image pipeline
         run_image(tex_path, density=density, rotate=rotate, quantity=quantity,
                   label_type=label_type, model=model, roll=roll,
                   no_stretch=no_stretch, align=align)
         return
+
+    if not os.path.isfile(tex_path):
+        print(f"Error: file not found: {tex_path}", file=sys.stderr)
+        sys.exit(1)
 
     # Check tools
     for tool, hint in [("pdflatex", "Install a TeX distribution (e.g. MiKTeX or TeX Live)"),
@@ -521,9 +521,44 @@ def open_image(path):
         raise
 
 
-async def _run_image_async(img, printer, roll, density, rotate, quantity, label_type,
-                           dither, threshold, no_stretch, align):
-    """Async core for run_image — runs all printer calls in a single event loop."""
+def _prepare_label_image(img, target_w, target_h, dither, threshold, rotate, no_stretch, align):
+    """Resize, convert to B&W, and rotate a greyscale image for label printing."""
+    if no_stretch:
+        scale = min(target_w / img.width, target_h / img.height)
+        new_w = round(img.width * scale)
+        new_h = round(img.height * scale)
+        align_label = align or "center"
+        print(f"  Resizing (no-stretch, {align_label}): {img.width}x{img.height}px -> "
+              f"{new_w}x{new_h}px (in {target_w}x{target_h}px)")
+        resized = img.resize((new_w, new_h), Image.LANCZOS)
+        canvas = Image.new("L", (target_w, target_h), 255)
+        paste_x = (target_w - new_w) // 2
+        if align == "start":
+            paste_y = 0
+        elif align == "end":
+            paste_y = target_h - new_h
+        else:
+            paste_y = (target_h - new_h) // 2
+        canvas.paste(resized, (paste_x, paste_y))
+        img = canvas
+    else:
+        print(f"  Resizing: {img.width}x{img.height}px -> {target_w}x{target_h}px")
+        img = img.resize((target_w, target_h), Image.LANCZOS)
+
+    if dither:
+        img = img.convert("1")
+    else:
+        img = img.point(lambda x: 255 if x > threshold else 0, "1")
+
+    if rotate != 0:
+        img = img.rotate(-rotate, expand=True)
+
+    return img
+
+
+async def _print_images_async(images, printer, roll, density, rotate, quantity,
+                              label_type, dither, threshold, no_stretch, align, delay):
+    """Async core — connect once, print one or more images, disconnect."""
     try:
         name = await printer.connect()
         print(f"Connected to {name}")
@@ -556,54 +591,28 @@ async def _run_image_async(img, printer, roll, density, rotate, quantity, label_
             sys.exit(1)
 
         tape_w, label_l = LABEL_SIZES[roll]
-        # After 90° rotation: width=printable height, height=label length
         target_w = mm_to_px(min(tape_w, PRINTABLE_HEIGHT_MM))
         target_h = mm_to_px(label_l)
         print(f"Target label: {roll} ({target_w}x{target_h}px, "
               f"{min(tape_w, PRINTABLE_HEIGHT_MM)}mm x {label_l}mm)")
 
-        # Resize to fit label
-        if no_stretch:
-            # Preserve aspect ratio, center on white canvas
-            scale = min(target_w / img.width, target_h / img.height)
-            new_w = round(img.width * scale)
-            new_h = round(img.height * scale)
-            align_label = align or "center"
-            print(f"Resizing (no-stretch, {align_label}): {img.width}x{img.height}px -> "
-                  f"{new_w}x{new_h}px (in {target_w}x{target_h}px)")
-            resized = img.resize((new_w, new_h), Image.LANCZOS)
-            canvas = Image.new("L", (target_w, target_h), 255)
-            paste_x = (target_w - new_w) // 2
-            if align == "start":
-                paste_y = 0
-            elif align == "end":
-                paste_y = target_h - new_h
-            else:
-                paste_y = (target_h - new_h) // 2
-            canvas.paste(resized, (paste_x, paste_y))
-            img = canvas
-        else:
-            print(f"Resizing: {img.width}x{img.height}px -> {target_w}x{target_h}px")
-            img = img.resize((target_w, target_h), Image.LANCZOS)
+        total = len(images)
+        for idx, (filename, img) in enumerate(images):
+            print(f"Printing {filename} ({idx + 1}/{total})...")
+            label = _prepare_label_image(img, target_w, target_h, dither, threshold,
+                                         rotate, no_stretch, align)
+            await printer.print_image(
+                label,
+                density=density,
+                quantity=quantity,
+                label_type=label_type,
+            )
+            print(f"  {filename} done.")
 
-        # Convert to black & white
-        if dither:
-            img = img.convert("1")  # Floyd-Steinberg dithering
-        else:
-            img = img.point(lambda x: 255 if x > threshold else 0, "1")
+            if idx < total - 1:
+                await printer.wait_ready(delay=delay)
 
-        # Apply rotation if requested
-        if rotate != 0:
-            img = img.rotate(-rotate, expand=True)
-
-        print("Sending to printer...")
-        await printer.print_image(
-            img,
-            density=density,
-            quantity=quantity,
-            label_type=label_type,
-        )
-        print("Print job completed.")
+        print(f"All {total} image(s) printed.")
     except SystemExit:
         raise
     except Exception as e:
@@ -612,30 +621,53 @@ async def _run_image_async(img, printer, roll, density, rotate, quantity, label_
     finally:
         await printer.disconnect()
 
-    print("Done.")
+
+# Image extensions recognized for directory scanning
+IMAGE_EXTENSIONS = {
+    ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tiff", ".tif",
+    ".webp", ".avif", ".heif", ".heic", ".svg", ".ico",
+}
+
+
+def _collect_images_from_dir(dir_path):
+    """Collect and sort image files from a directory (non-recursive)."""
+    files = []
+    for name in sorted(os.listdir(dir_path)):
+        ext = os.path.splitext(name)[1].lower()
+        if ext in IMAGE_EXTENSIONS:
+            files.append(os.path.join(dir_path, name))
+    return files
 
 
 def run_image(image_path, density=3, rotate=0, quantity=1, label_type=1,
               model=None, roll=None, dither=True, threshold=128,
-              no_stretch=False, align=None):
-    """Print any image file directly on a NIIMBOT label."""
-    if not os.path.isfile(image_path):
+              no_stretch=False, align=None, delay=1.0):
+    """Print image file(s) directly on a NIIMBOT label. Accepts a file or directory."""
+    # Collect file(s)
+    if os.path.isdir(image_path):
+        paths = _collect_images_from_dir(image_path)
+        if not paths:
+            print(f"Error: no image files found in {image_path}", file=sys.stderr)
+            sys.exit(1)
+        print(f"Found {len(paths)} image(s) in {image_path}")
+    elif os.path.isfile(image_path):
+        paths = [image_path]
+    else:
         print(f"Error: file not found: {image_path}", file=sys.stderr)
         sys.exit(1)
 
-    # Open image (supports all Pillow formats + ImageMagick fallback)
-    img = open_image(image_path)
-    print(f"Opened {os.path.basename(image_path)}: {img.width}x{img.height}px, mode={img.mode}")
+    # Open and convert all images to greyscale
+    images = []
+    for p in paths:
+        img = open_image(p)
+        print(f"Opened {os.path.basename(p)}: {img.width}x{img.height}px, mode={img.mode}")
+        images.append((os.path.basename(p), img.convert("L")))
 
-    # Convert to greyscale
-    img = img.convert("L")
-
-    # Run all printer interaction in a single event loop to avoid
-    # asyncio.Event bound-to-different-loop errors
+    # Run all printer interaction in a single event loop
     printer = get_printer(model)
-    asyncio.run(_run_image_async(
-        img, printer, roll, density, rotate, quantity, label_type,
-        dither, threshold, no_stretch, align,
+    asyncio.run(_print_images_async(
+        images, printer, roll, density, rotate, quantity, label_type,
+        dither, threshold, no_stretch, align, delay,
     ))
 
 
@@ -890,8 +922,8 @@ def main():
                               help="With --fit --no-stretch: align content within label (start/center/end, default: center)")
 
     # image
-    image_parser = sub.add_parser("image", help="Print any image file (auto-converts to greyscale)")
-    image_parser.add_argument("file", help="Path to image file (png, jpg, bmp, gif, tiff, webp, avif, heif, ...)")
+    image_parser = sub.add_parser("image", help="Print any image file or directory of images (auto-converts to greyscale)")
+    image_parser.add_argument("file", help="Image file or directory of images to print")
     image_parser.add_argument("--roll", type=str, default=None, metavar="SIZE",
                               help=f"Label roll size (e.g. 12x40). Auto-detected from RFID if omitted.")
     image_parser.add_argument("--density", type=int, default=3, choices=range(1, 6),
@@ -912,6 +944,8 @@ def main():
                               help="Preserve aspect ratio and center instead of stretching to fill")
     image_parser.add_argument("--align", type=str, default=None, choices=["start", "center", "end"],
                               help="With --no-stretch: align content within label (default: center)")
+    image_parser.add_argument("--delay", type=float, default=1.0, metavar="SEC",
+                              help="Seconds between prints for paper advance (default: 1.0)")
 
     # feed
     sub.add_parser("feed", help="Feed paper to recalibrate label positioning")
@@ -968,7 +1002,7 @@ def main():
         run_image(args.file, density=args.density, rotate=args.rotate,
                   quantity=args.quantity, label_type=args.label_type, model=model,
                   roll=args.roll, dither=args.dither, threshold=args.threshold,
-                  no_stretch=args.no_stretch, align=args.align)
+                  no_stretch=args.no_stretch, align=args.align, delay=args.delay)
     elif args.command == "feed":
         run_feed(model)
     elif args.command == "test-page":
