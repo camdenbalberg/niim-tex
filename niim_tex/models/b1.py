@@ -29,7 +29,7 @@ class B1Printer(NiimbotPrinter):
     MAX_WIDTH_PX = 591    # 50mm printhead at 300 DPI
     MAX_DENSITY = 5
     PRINTABLE_HEIGHT_MM = 50
-    DEFAULT_GAMMA = 0.55  # Compensate for finer 300 DPI dots filling in darker
+    DEFAULT_GAMMA = 0.6   # Compensate for finer 300 DPI dots filling in darker
 
     @classmethod
     def _matches_name(cls, name):
