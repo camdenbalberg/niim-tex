@@ -551,7 +551,7 @@ def open_image(path):
         raise
 
 
-def _prepare_label_image(img, target_w, target_h, dither, threshold, rotate, no_stretch, align):
+def _prepare_label_image(img, target_w, target_h, dither, threshold, rotate, no_stretch, align, gamma=1.0):
     """Resize, convert to B&W, and rotate a greyscale image for label printing."""
     # Auto-rotate so the image's long edge aligns with the label's long edge
     img_landscape = img.width > img.height
@@ -582,6 +582,12 @@ def _prepare_label_image(img, target_w, target_h, dither, threshold, rotate, no_
         print(f"  Resizing: {img.width}x{img.height}px -> {target_w}x{target_h}px")
         img = img.resize((target_w, target_h), Image.LANCZOS)
 
+    # Gamma correction: <1.0 lightens (opens up darks), >1.0 darkens
+    if gamma != 1.0:
+        lut = [min(255, int(255 * (i / 255) ** gamma)) for i in range(256)]
+        img = img.point(lut)
+        print(f"  Gamma correction: {gamma:.2f}")
+
     if dither:
         img = img.convert("1")
     else:
@@ -594,14 +600,16 @@ def _prepare_label_image(img, target_w, target_h, dither, threshold, rotate, no_
 
 
 async def _print_images_async(images, printer, roll, density, rotate, quantity,
-                              label_type, dither, threshold, no_stretch, align, delay):
+                              label_type, dither, threshold, no_stretch, align, delay,
+                              gamma=1.0, preview=False):
     """Async core — connect once, print one or more images, disconnect."""
     try:
-        name = await printer.connect()
-        print(f"Connected to {name}")
+        if not preview:
+            name = await printer.connect()
+            print(f"Connected to {name}")
 
         # Auto-detect roll from RFID if --roll not specified
-        if not roll:
+        if not roll and not preview:
             try:
                 rfid = await printer.get_rfid()
                 if rfid and rfid.get("barcode"):
@@ -617,6 +625,10 @@ async def _print_images_async(images, printer, roll, density, rotate, quantity,
             except Exception:
                 pass  # RFID read failed, continue without validation
 
+        if not roll and preview:
+            print("Error: --preview requires --roll SIZE (printer not connected).", file=sys.stderr)
+            print(f"Options: {', '.join(LABEL_SIZES)}", file=sys.stderr)
+            return
         if not roll:
             print("Error: label size required. Use --roll SIZE or load an RFID-tagged roll.", file=sys.stderr)
             print(f"Options: {', '.join(LABEL_SIZES)}", file=sys.stderr)
@@ -637,10 +649,20 @@ async def _print_images_async(images, printer, roll, density, rotate, quantity,
               f"{actual_printable}mm x {label_l}mm @ {printer_dpi} DPI)")
 
         total = len(images)
+        preview_paths = []
         for idx, (filename, img) in enumerate(images):
-            print(f"Printing {filename} ({idx + 1}/{total})...")
             label = _prepare_label_image(img, target_w, target_h, dither, threshold,
-                                         rotate, no_stretch, align)
+                                         rotate, no_stretch, align, gamma)
+
+            if preview:
+                preview_path = os.path.join(
+                    tempfile.gettempdir(), f"niimtex_preview_{idx}_{filename}.png")
+                label.save(preview_path)
+                preview_paths.append(preview_path)
+                print(f"Preview saved: {preview_path}")
+                continue
+
+            print(f"Printing {filename} ({idx + 1}/{total})...")
             await printer.print_image(
                 label,
                 density=density,
@@ -652,14 +674,21 @@ async def _print_images_async(images, printer, roll, density, rotate, quantity,
             if idx < total - 1:
                 await printer.wait_ready(delay=delay)
 
-        print(f"All {total} image(s) printed.")
+        if preview:
+            for p in preview_paths:
+                os.startfile(p)
+            print(f"Opened {len(preview_paths)} preview(s). "
+                  f"Remove --preview to print.")
+        else:
+            print(f"All {total} image(s) printed.")
     except SystemExit:
         raise
     except Exception as e:
         print(f"Print failed: {e}", file=sys.stderr)
         sys.exit(1)
     finally:
-        await printer.disconnect()
+        if not preview:
+            await printer.disconnect()
 
 
 # Image extensions recognized for directory scanning
@@ -681,7 +710,7 @@ def _collect_images_from_dir(dir_path):
 
 def run_image(image_path, density=3, rotate=0, quantity=1, label_type=1,
               model=None, roll=None, dither=True, threshold=128,
-              no_stretch=False, align=None, delay=1.0):
+              no_stretch=False, align=None, delay=1.0, gamma=1.0, preview=False):
     """Print image file(s) directly on a NIIMBOT label. Accepts a file or directory."""
     # Collect file(s)
     if os.path.isdir(image_path):
@@ -707,7 +736,7 @@ def run_image(image_path, density=3, rotate=0, quantity=1, label_type=1,
     printer = get_printer(model)
     asyncio.run(_print_images_async(
         images, printer, roll, density, rotate, quantity, label_type,
-        dither, threshold, no_stretch, align, delay,
+        dither, threshold, no_stretch, align, delay, gamma, preview,
     ))
 
 
@@ -984,6 +1013,10 @@ def main():
                               help="Preserve aspect ratio and center instead of stretching to fill")
     image_parser.add_argument("--align", type=str, default=None, choices=["start", "center", "end"],
                               help="With --no-stretch: align content within label (default: center)")
+    image_parser.add_argument("--gamma", type=float, default=1.0, metavar="G",
+                              help="Gamma correction before dithering: <1.0 lightens (less harsh darks), >1.0 darkens (default: 1.0)")
+    image_parser.add_argument("--preview", action="store_true",
+                              help="Open a preview of the processed B&W image instead of printing")
     image_parser.add_argument("--delay", type=float, default=1.0, metavar="SEC",
                               help="Seconds between prints for paper advance (default: 1.0)")
 
@@ -1042,7 +1075,8 @@ def main():
         run_image(args.file, density=args.density, rotate=args.rotate,
                   quantity=args.quantity, label_type=args.label_type, model=model,
                   roll=args.roll, dither=args.dither, threshold=args.threshold,
-                  no_stretch=args.no_stretch, align=args.align, delay=args.delay)
+                  no_stretch=args.no_stretch, align=args.align, delay=args.delay,
+                  gamma=args.gamma, preview=args.preview)
     elif args.command == "feed":
         run_feed(model)
     elif args.command == "test-page":
