@@ -601,6 +601,41 @@ def _prepare_label_image(img, target_w, target_h, dither, threshold, rotate, no_
     return img
 
 
+def _open_contact_sheet(labels, names, label_w, label_h):
+    """Build a single contact sheet from processed label images and open it."""
+    from PIL import ImageDraw
+
+    n = len(labels)
+    cols = min(n, 4)
+    rows = -(-n // cols)  # ceil division
+    gap = 6
+    name_h = 14  # space for filename text below each label
+    cell_w = label_w + gap
+    cell_h = label_h + name_h + gap
+    sheet_w = cols * cell_w + gap
+    sheet_h = rows * cell_h + gap
+
+    sheet = Image.new("L", (sheet_w, sheet_h), 200)
+    draw = ImageDraw.Draw(sheet)
+
+    for i, (label, name) in enumerate(zip(labels, names)):
+        col = i % cols
+        row = i // cols
+        x = gap + col * cell_w
+        y = gap + row * cell_h
+        sheet.paste(label.convert("L"), (x, y))
+        # Truncate long filenames
+        display_name = name if len(name) <= 20 else name[:17] + "..."
+        draw.text((x + 2, y + label_h + 1), display_name, fill=0)
+
+    preview_path = os.path.join(tempfile.gettempdir(), "niimtex_contact_sheet.png")
+    sheet.save(preview_path)
+    print(f"Contact sheet: {n} images, {cols}x{rows} grid")
+    print(f"Saved to {preview_path}")
+    os.startfile(preview_path)
+    print("Remove --preview to print.")
+
+
 async def _print_images_async(images, printer, roll, density, rotate, quantity,
                               label_type, dither, threshold, no_stretch, align, delay,
                               gamma=None, preview=False):
@@ -656,17 +691,15 @@ async def _print_images_async(images, printer, roll, density, rotate, quantity,
               f"{actual_printable}mm x {label_l}mm @ {printer_dpi} DPI, gamma {gamma})")
 
         total = len(images)
-        preview_paths = []
+        preview_labels = []
+        preview_names = []
         for idx, (filename, img) in enumerate(images):
             label = _prepare_label_image(img, target_w, target_h, dither, threshold,
                                          rotate, no_stretch, align, gamma)
 
             if preview:
-                preview_path = os.path.join(
-                    tempfile.gettempdir(), f"niimtex_preview_{idx}_{filename}.png")
-                label.save(preview_path)
-                preview_paths.append(preview_path)
-                print(f"Preview saved: {preview_path}")
+                preview_labels.append(label)
+                preview_names.append(filename)
                 continue
 
             print(f"Printing {filename} ({idx + 1}/{total})...")
@@ -682,10 +715,7 @@ async def _print_images_async(images, printer, roll, density, rotate, quantity,
                 await printer.wait_ready(delay=delay)
 
         if preview:
-            for p in preview_paths:
-                os.startfile(p)
-            print(f"Opened {len(preview_paths)} preview(s). "
-                  f"Remove --preview to print.")
+            _open_contact_sheet(preview_labels, preview_names, target_w, target_h)
         else:
             print(f"All {total} image(s) printed.")
     except SystemExit:
