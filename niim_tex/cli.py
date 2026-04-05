@@ -551,7 +551,7 @@ def open_image(path):
         raise
 
 
-def _prepare_label_image(img, target_w, target_h, dither, threshold, rotate, no_stretch, align, gamma=1.0):
+def _prepare_label_image(img, target_w, target_h, dither, threshold, rotate, no_stretch, align, gamma=None):
     """Resize, convert to B&W, and rotate a greyscale image for label printing."""
     # Auto-rotate so the image's long edge aligns with the label's long edge
     img_landscape = img.width > img.height
@@ -583,6 +583,8 @@ def _prepare_label_image(img, target_w, target_h, dither, threshold, rotate, no_
         img = img.resize((target_w, target_h), Image.LANCZOS)
 
     # Gamma correction: <1.0 lightens (opens up darks), >1.0 darkens
+    if gamma is None:
+        gamma = 1.0
     if gamma != 1.0:
         lut = [min(255, int(255 * (i / 255) ** gamma)) for i in range(256)]
         img = img.point(lut)
@@ -601,7 +603,7 @@ def _prepare_label_image(img, target_w, target_h, dither, threshold, rotate, no_
 
 async def _print_images_async(images, printer, roll, density, rotate, quantity,
                               label_type, dither, threshold, no_stretch, align, delay,
-                              gamma=1.0, preview=False):
+                              gamma=None, preview=False):
     """Async core — connect once, print one or more images, disconnect."""
     try:
         if not preview:
@@ -645,8 +647,13 @@ async def _print_images_async(images, printer, roll, density, rotate, quantity,
         actual_printable = min(tape_w, printable_mm)
         target_w = mm_to_px(actual_printable, printer_dpi)
         target_h = mm_to_px(label_l, printer_dpi)
+
+        # Resolve gamma default from printer model if not explicitly set
+        if gamma is None:
+            gamma = getattr(printer, 'DEFAULT_GAMMA', 1.0)
+
         print(f"Target label: {roll} ({target_w}x{target_h}px, "
-              f"{actual_printable}mm x {label_l}mm @ {printer_dpi} DPI)")
+              f"{actual_printable}mm x {label_l}mm @ {printer_dpi} DPI, gamma {gamma})")
 
         total = len(images)
         preview_paths = []
@@ -710,7 +717,7 @@ def _collect_images_from_dir(dir_path):
 
 def run_image(image_path, density=3, rotate=0, quantity=1, label_type=1,
               model=None, roll=None, dither=True, threshold=128,
-              no_stretch=False, align=None, delay=1.0, gamma=1.0, preview=False):
+              no_stretch=False, align=None, delay=1.0, gamma=None, preview=False):
     """Print image file(s) directly on a NIIMBOT label. Accepts a file or directory."""
     # Collect file(s)
     if os.path.isdir(image_path):
@@ -1013,8 +1020,9 @@ def main():
                               help="Preserve aspect ratio and center instead of stretching to fill")
     image_parser.add_argument("--align", type=str, default=None, choices=["start", "center", "end"],
                               help="With --no-stretch: align content within label (default: center)")
-    image_parser.add_argument("--gamma", type=float, default=1.0, metavar="G",
-                              help="Gamma correction before dithering: <1.0 lightens (less harsh darks), >1.0 darkens (default: 1.0)")
+    image_parser.add_argument("--gamma", type=float, default=None, metavar="G",
+                              help="Gamma correction before dithering: <1.0 lightens (less harsh darks), >1.0 darkens. "
+                                   "Default: 0.55 for B1 Pro (300 DPI), 1.0 for D110 (203 DPI)")
     image_parser.add_argument("--preview", action="store_true",
                               help="Open a preview of the processed B&W image instead of printing")
     image_parser.add_argument("--delay", type=float, default=1.0, metavar="SEC",
