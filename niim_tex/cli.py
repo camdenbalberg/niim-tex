@@ -551,7 +551,8 @@ def open_image(path):
         raise
 
 
-def _prepare_label_image(img, target_w, target_h, dither, threshold, rotate, no_stretch, align, gamma=None):
+def _prepare_label_image(img, target_w, target_h, dither, threshold, rotate,
+                         no_stretch, align, gamma=None, crop=False):
     """Resize, convert to B&W, and rotate a greyscale image for label printing."""
     # Auto-rotate so the image's long edge aligns with the label's long edge
     img_landscape = img.width > img.height
@@ -560,7 +561,25 @@ def _prepare_label_image(img, target_w, target_h, dither, threshold, rotate, no_
         img = img.rotate(-90, expand=True)
         print(f"  Auto-rotated to match label orientation: {img.width}x{img.height}px")
 
-    if no_stretch:
+    if crop:
+        # Scale up to FILL the label, then crop the overflow
+        scale = max(target_w / img.width, target_h / img.height)
+        new_w = round(img.width * scale)
+        new_h = round(img.height * scale)
+        resized = img.resize((new_w, new_h), Image.LANCZOS)
+        # Crop from center (or aligned edge)
+        if align == "start":
+            cx, cy = 0, 0
+        elif align == "end":
+            cx = new_w - target_w
+            cy = new_h - target_h
+        else:
+            cx = (new_w - target_w) // 2
+            cy = (new_h - target_h) // 2
+        img = resized.crop((cx, cy, cx + target_w, cy + target_h))
+        print(f"  Crop-to-fill: {img.width}x{img.height}px "
+              f"(scaled {new_w}x{new_h}, cropped to {target_w}x{target_h})")
+    elif no_stretch:
         scale = min(target_w / img.width, target_h / img.height)
         new_w = round(img.width * scale)
         new_h = round(img.height * scale)
@@ -637,7 +656,7 @@ def _open_contact_sheet(labels, names, label_w, label_h):
 
 
 async def _print_images_async(images, printer, roll, density, rotate, quantity,
-                              label_type, dither, threshold, no_stretch, align, delay,
+                              label_type, dither, threshold, no_stretch, crop, align, delay,
                               gamma=None, preview=False):
     """Async core — connect once, print one or more images, disconnect."""
     try:
@@ -695,7 +714,7 @@ async def _print_images_async(images, printer, roll, density, rotate, quantity,
         preview_names = []
         for idx, (filename, img) in enumerate(images):
             label = _prepare_label_image(img, target_w, target_h, dither, threshold,
-                                         rotate, no_stretch, align, gamma)
+                                         rotate, no_stretch, align, gamma, crop)
 
             if preview:
                 preview_labels.append(label)
@@ -747,7 +766,7 @@ def _collect_images_from_dir(dir_path):
 
 def run_image(image_path, density=3, rotate=0, quantity=1, label_type=1,
               model=None, roll=None, dither=True, threshold=128,
-              no_stretch=False, align=None, delay=1.0, gamma=None, preview=False):
+              no_stretch=False, crop=False, align=None, delay=1.0, gamma=None, preview=False):
     """Print image file(s) directly on a NIIMBOT label. Accepts a file or directory."""
     # Collect file(s)
     if os.path.isdir(image_path):
@@ -773,7 +792,7 @@ def run_image(image_path, density=3, rotate=0, quantity=1, label_type=1,
     printer = get_printer(model)
     asyncio.run(_print_images_async(
         images, printer, roll, density, rotate, quantity, label_type,
-        dither, threshold, no_stretch, align, delay, gamma, preview,
+        dither, threshold, no_stretch, crop, align, delay, gamma, preview,
     ))
 
 
@@ -1048,8 +1067,10 @@ def main():
                               help="B&W threshold 0-255, used with --no-dither (default: 128)")
     image_parser.add_argument("--no-stretch", action="store_true",
                               help="Preserve aspect ratio and center instead of stretching to fill")
+    image_parser.add_argument("--crop", action="store_true",
+                              help="Scale up to fill the entire label and crop overflow (no white space)")
     image_parser.add_argument("--align", type=str, default=None, choices=["start", "center", "end"],
-                              help="With --no-stretch: align content within label (default: center)")
+                              help="With --no-stretch or --crop: align content within label (default: center)")
     image_parser.add_argument("--gamma", type=float, default=None, metavar="G",
                               help="Gamma correction before dithering: <1.0 lightens (less harsh darks), >1.0 darkens. "
                                    "Default: 0.55 for B1 Pro (300 DPI), 1.0 for D110 (203 DPI)")
@@ -1113,8 +1134,8 @@ def main():
         run_image(args.file, density=args.density, rotate=args.rotate,
                   quantity=args.quantity, label_type=args.label_type, model=model,
                   roll=args.roll, dither=args.dither, threshold=args.threshold,
-                  no_stretch=args.no_stretch, align=args.align, delay=args.delay,
-                  gamma=args.gamma, preview=args.preview)
+                  no_stretch=args.no_stretch, crop=args.crop, align=args.align,
+                  delay=args.delay, gamma=args.gamma, preview=args.preview)
     elif args.command == "feed":
         run_feed(model)
     elif args.command == "test-page":
