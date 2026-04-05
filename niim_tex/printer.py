@@ -20,8 +20,10 @@ class NiimbotPrinter:
     """
 
     MODEL_PREFIXES: list[str] = []
+    DPI: int = 203                  # Native print resolution (D110=203, B1 Pro=300)
     MAX_WIDTH_PX: int = 96
     MAX_DENSITY: int = 5
+    PRINTABLE_HEIGHT_MM: int = 12   # Printhead width in mm (D110=12, B1=48)
 
     def __init__(self):
         self.client = None
@@ -32,13 +34,22 @@ class NiimbotPrinter:
 
     # ── BLE scanning ───────────────────────────────────────────────────
 
+    @classmethod
+    def _matches_name(cls, name):
+        """Check if a BLE device name matches this printer model.
+
+        Subclasses can override for more sophisticated matching (e.g. B1
+        needs to exclude B18).  Default: prefix match against MODEL_PREFIXES.
+        """
+        upper = name.upper()
+        return any(upper.startswith(p.upper()) for p in cls.MODEL_PREFIXES)
+
     async def _find_device(self, timeout=10):
-        """Scan for a printer matching MODEL_PREFIXES. Returns a BleakDevice."""
-        prefixes = tuple(p.upper() for p in self.MODEL_PREFIXES)
+        """Scan for a printer matching this model. Returns a BleakDevice."""
         found = []
 
         def on_detect(device, _adv):
-            if device.name and device.name.upper().startswith(prefixes):
+            if device.name and self._matches_name(device.name):
                 found.append(device)
 
         scanner = BleakScanner(detection_callback=on_detect)
@@ -59,13 +70,22 @@ class NiimbotPrinter:
 
     @staticmethod
     async def _find_char(client):
-        """Find the GATT characteristic (read + write-no-response + notify)."""
+        """Find the GATT characteristic for printer communication.
+
+        Looks for a characteristic with write-without-response + notify,
+        preferring one that also has read (D110 layout).
+        """
+        # Strict: read + write-without-response + notify
         for service in client.services:
-            chars = list(service.characteristics)
-            if len(chars) == 1:
-                c = chars[0]
+            for c in service.characteristics:
                 props = c.properties
                 if "read" in props and "write-without-response" in props and "notify" in props:
+                    return c.uuid
+        # Fallback: write-without-response + notify (some B-series layouts)
+        for service in client.services:
+            for c in service.characteristics:
+                props = c.properties
+                if "write-without-response" in props and "notify" in props:
                     return c.uuid
         raise RuntimeError("Could not find printer communication characteristic.")
 
@@ -92,8 +112,12 @@ class NiimbotPrinter:
     # ── Low-level comms ────────────────────────────────────────────────
 
     def _on_notify(self, _sender, data):
-        self._notify_data = data
-        self._notify_event.set()
+        # Only accept valid NIIMBOT protocol packets (0x55 0x55 header).
+        # Some printers send spurious BLE notifications (e.g. 0x00000000
+        # on subscribe) that must be ignored.
+        if len(data) >= 7 and data[0] == 0x55 and data[1] == 0x55:
+            self._notify_data = data
+            self._notify_event.set()
 
     async def _command(self, cmd, data, timeout=10):
         """Send a command and wait for the notification response."""

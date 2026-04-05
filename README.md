@@ -5,7 +5,7 @@
 
 Design labels in LaTeX with TikZ and print them directly to NIIMBOT thermal printers over BLE.
 
-Currently supports the **D110 / D110-M**. Multi-device support (D11, B21, B1, B18) is planned — see [Roadmap](#roadmap).
+Supports the **D110 / D110-M** (12mm, 203 DPI) and **B1 Pro** (50mm, 300 DPI). Multi-device auto-detection — just power on the printer and print.
 
 ## Install
 
@@ -31,7 +31,7 @@ pip install -e .
 - **Python 3.10+**
 - **pdflatex** (MiKTeX or TeX Live)
 - **ImageMagick** (`magick` on PATH)
-- **NIIMBOT D110** (tested on D110_M V4 firmware)
+- **NIIMBOT printer** — D110 (tested on D110_M V4) or B1 Pro (tested on firmware 2.12)
 
 ## Quick Start
 
@@ -46,10 +46,20 @@ Or generate a template interactively:
 
 ```bash
 python niim_tex.py new        # interactive size picker
-python niim_tex.py new 12x40  # direct
+python niim_tex.py new 12x40  # D-series label
+python niim_tex.py new 50x30  # B-series label
 ```
 
 See [examples/example_label.tex](examples/example_label.tex) for a fully designed label.
+
+## Supported Printers
+
+| Model | Printhead | DPI | Protocol | Status |
+|-------|-----------|-----|----------|--------|
+| D110 / D110-M | 12mm (96px) | 203 | V4 (9-byte startPrint, 13-byte setPageSize) | Tested |
+| B1 Pro | 50mm (591px) | 300 | Standard (startPage, setDimension, setQuantity) | Tested |
+
+The printer is auto-detected by BLE name when powered on. Use `--model d110` or `--model b1` to force a specific model.
 
 ## Project Structure
 
@@ -60,8 +70,9 @@ niim-tex/
 │   ├── protocol.py            Packet framing, enums
 │   ├── printer.py             Base NiimbotPrinter class (BLE, info, settings)
 │   ├── models/
-│   │   ├── __init__.py        Model registry + get_printer()
-│   │   └── d110.py            D110_M V4 print task
+│   │   ├── __init__.py        Model registry + auto-detection + get_printer()
+│   │   ├── d110.py            D110_M V4 print driver
+│   │   └── b1.py              B1 Pro print driver
 │   ├── cli.py                 Main CLI (template generation, compilation, printing)
 │   └── mosaic.py              Image-to-label-strip mosaic tool
 ├── niim_tex.py                Wrapper script (backwards compat)
@@ -77,9 +88,10 @@ niim-tex/
 | Command | Description |
 |---------|-------------|
 | `--list` | Show all supported label sizes with pixel dimensions |
-| `--model MODEL` | Specify printer model (e.g. `d110`). Auto-detects if omitted |
+| `--model MODEL` | Specify printer model (`d110`, `b1`). Auto-detects if omitted |
 | `new [SIZE]` | Generate a LaTeX template (interactive menu if no size given) |
 | `print <file.tex>` | Compile LaTeX → PDF → PNG → send to printer |
+| `image <file\|dir>` | Print any image file or directory of images |
 | `cable --front <file.tex>` | Assemble and print cable labels from half-flag templates |
 | `info` | Query printer info (battery, firmware, serial) |
 | `rfid` | Read label roll RFID tag (remaining labels, detected size) |
@@ -146,7 +158,7 @@ When you run `print`, compilation artifacts are saved to `builds/<name>/`:
 builds/
 └── my_label/
     ├── my_label.pdf   Compiled PDF
-    ├── my_label.png   Rotated bitmap sent to printer
+    ├── my_label.png   Bitmap sent to printer
     ├── my_label.aux   LaTeX auxiliary
     └── my_label.log   LaTeX log
 ```
@@ -161,6 +173,7 @@ python mosaic.py photo.jpg --dry-run                 # show strip count
 python mosaic.py photo.jpg                           # print all strips
 python mosaic.py photo.jpg --strips 3,5              # reprint specific strips
 python mosaic.py photo.jpg --size 15x50 --density 4  # custom size and density
+python mosaic.py photo.jpg --size 50x30 --model b1   # B1 Pro with 50x30 labels
 python mosaic.py photo.jpg --no-dither --threshold 128  # hard B&W threshold
 python mosaic.py photo.jpg --width 2                 # 2 labels wide
 python mosaic.py photo.jpg --width 3 --force-height 4  # exact 3x4 grid
@@ -193,7 +206,7 @@ Output is saved to `mosaic/<image_name>/` with individual strip images and a num
 
 ## Supported Label Sizes
 
-### Standard Labels
+### D-series Labels (D110, 12mm printhead, 203 DPI)
 
 | Size | Tape Width | Length | Pixels (W x L) |
 |------|-----------|--------|-----------------|
@@ -216,6 +229,29 @@ Output is saved to `mosaic/<image_name>/` with individual strip images and a num
 | 15x50 | 15mm | 50mm | 120 x 400 |
 | 15x70 | 15mm | 70mm | 120 x 559 |
 
+### B-series Labels (B1 Pro, 50mm printhead, 300 DPI)
+
+| Size | Tape Width | Length | Pixels (W x L) |
+|------|-----------|--------|-----------------|
+| 20x30 | 20mm | 30mm | 236 x 354 |
+| 25x30 | 25mm | 30mm | 295 x 354 |
+| 25x50 | 25mm | 50mm | 295 x 591 |
+| 30x15 | 30mm | 15mm | 354 x 177 |
+| 30x20 | 30mm | 20mm | 354 x 236 |
+| 30x25 | 30mm | 25mm | 354 x 295 |
+| 30x30 | 30mm | 30mm | 354 x 354 |
+| 30x40 | 30mm | 40mm | 354 x 472 |
+| 30x50 | 30mm | 50mm | 354 x 591 |
+| 40x20 | 40mm | 20mm | 472 x 236 |
+| 40x30 | 40mm | 30mm | 472 x 354 |
+| 40x40 | 40mm | 40mm | 472 x 472 |
+| 40x50 | 40mm | 50mm | 472 x 591 |
+| 40x60 | 40mm | 60mm | 472 x 709 |
+| 40x80 | 40mm | 80mm | 472 x 945 |
+| 50x30 | 50mm | 30mm | 591 x 354 |
+| 50x50 | 50mm | 50mm | 591 x 591 |
+| 50x80 | 50mm | 80mm | 591 x 945 |
+
 ### Cable Labels (T12.5\*74+35)
 
 | Size | Description | Pixels (W x L) |
@@ -225,11 +261,12 @@ Output is saved to `mosaic/<image_name>/` with individual strip images and a num
 | 12.5x35 | Cable wrap portion | 100 x 280 |
 | 12.5x109 | Entire label (flag + wrap) | 100 x 871 |
 
-> The D110 printhead is 12mm (96px) wide. On tape wider than 12mm, the printable area is still 12mm — templates are automatically capped to this limit.
+> D-series: the D110 printhead is 12mm (96px). On tape wider than 12mm, the printable area is capped at 12mm.
+> B-series: the B1 Pro printhead is 50mm (591px). The full tape width is printable.
 
 ## Template Anatomy
 
-Templates use landscape orientation (long axis horizontal) for natural text layout:
+Templates use landscape orientation for natural text layout:
 
 ```latex
 \documentclass[10pt]{article}
@@ -250,24 +287,32 @@ Templates use landscape orientation (long axis horizontal) for natural text layo
 ```
 
 Key details:
-- `paperheight` = min(tape_width, 12mm) — capped to the 12mm printhead
+- Templates are always landscape (long axis = `paperwidth`)
 - `\useasboundingbox` locks the TikZ canvas to the full page (prevents content-dependent margins)
 - `\topskip=0pt` and `\parindent=0pt` eliminate LaTeX's default spacing
-- ImageMagick rotates the landscape PDF 90° CW to match the printer's physical feed direction
+- D-series labels are rotated 90° during compilation to match the printer's feed direction
+- B-series labels (tape width > label length) are not rotated — already in the correct orientation
 
 ## Architecture
 
 The codebase is structured as a Python package (`niim_tex/`) with a pluggable model system:
 
-- **`printer.py`** — `NiimbotPrinter` base class with all shared BLE communication, info queries, settings, and calibration commands (~300 lines of shared code)
-- **`models/d110.py`** — `D110Printer` subclass implementing the V4 print sequence (~100 lines)
-- **`models/__init__.py`** — Model registry with `get_printer(model)` factory function
+- **`printer.py`** — `NiimbotPrinter` base class with all shared BLE communication, info queries, settings, and calibration commands
+- **`models/d110.py`** — `D110Printer` subclass: V4 protocol with 9-byte startPrint, 13-byte setPageSize, pixel count row headers, write-without-response
+- **`models/b1.py`** — `B1Printer` subclass: standard protocol with separate startPage/setDimension/setQuantity, zero-count row headers, write-with-response
+- **`models/__init__.py`** — Model registry with `get_printer(model)` factory and BLE auto-detection across all models
 
-To add a new printer model, create a subclass of `NiimbotPrinter` in `models/`, implement `print_image()`, and register it in `models/__init__.py`.
+### Adding a new printer model
+
+1. Subclass `NiimbotPrinter` in `niim_tex/models/`
+2. Set `MODEL_PREFIXES`, `DPI`, `MAX_WIDTH_PX`, `MAX_DENSITY`, `PRINTABLE_HEIGHT_MM`
+3. Implement `async def print_image(...)`
+4. Register in `niim_tex/models/__init__.py`
+5. Open a PR with the model name and firmware version you tested on
 
 ## Protocol Notes
 
-The D110_M uses the `D110MV4PrintTask` protocol, which differs significantly from the standard D110:
+### D110_M V4
 
 - **9-byte PrintStart** (not 1-byte) — prevents double-printing
 - **No `startPage` command** — skip it entirely
@@ -276,19 +321,10 @@ The D110_M uses the `D110MV4PrintTask` protocol, which differs significantly fro
 - **All BLE writes use `response=False`** — write-without-response mode
 - **One-way heartbeat after `endPrint`** — BLE session cleanup workaround
 
-## Roadmap
+### B1 Pro (Standard)
 
-Multi-device support is planned. The NIIMBOT printer lineup:
-
-**D-series (12mm / 96px printhead):** D11, D11-H, D110, D110-M, D101
-**B-series (48mm / 384px printhead):** B1, B18, B21, B21S, B21 Pro
-
-Each model family uses a different print protocol variant. The goal is a unified Python driver with per-model print task implementations, similar to [niimprint](https://github.com/AndBondStyle/niimprint) but with the LaTeX template pipeline built in.
-
-### Contributing a new model
-
-1. Subclass `NiimbotPrinter` in `niim_tex/models/`
-2. Set `MODEL_PREFIXES`, `MAX_WIDTH_PX`, `MAX_DENSITY`
-3. Implement `async def print_image(...)`
-4. Register in `niim_tex/models/__init__.py`
-5. Open a PR with the model name and firmware version you tested on
+- **1-byte startPrint** + separate **startPage** (0x03)
+- **4-byte setDimension** (height, width) + separate **setQuantity**
+- **Zero-count 6-byte row headers** (same struct as D110, counts always 0)
+- **All BLE writes use default mode** (write-with-response)
+- **No post-print heartbeat workaround needed**

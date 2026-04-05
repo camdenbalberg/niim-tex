@@ -5,8 +5,9 @@ MM_PER_INCH = 25.4
 PRINTABLE_HEIGHT_MM = 12  # D110 printhead is 12mm (96px)
 
 # (tape_width_mm, label_length_mm)
-# Covers standard NIIMBOT D-series label rolls
+# Covers NIIMBOT D-series and B-series label rolls
 LABEL_SIZES = {
+    # ── D-series (12mm printhead: D110, D11, D101) ──────────────────
     # 12mm tape
     "12x22":   (12, 22),
     "12x30":   (12, 30),
@@ -35,6 +36,25 @@ LABEL_SIZES = {
     "12.5x74":  (12.5, 74),   # Full flag only (both halves)
     "12.5x37":  (12.5, 37),   # Single flag half (front or back)
     "12.5x35":  (12.5, 35),   # Cable wrap portion only
+    # ── B-series (48mm printhead: B1, B21, B18) ─────────────────────
+    "20x30":   (20, 30),
+    "25x30":   (25, 30),
+    "25x50":   (25, 50),
+    "30x15":   (30, 15),
+    "30x20":   (30, 20),
+    "30x25":   (30, 25),
+    "30x30":   (30, 30),
+    "30x40":   (30, 40),
+    "30x50":   (30, 50),
+    "40x20":   (40, 20),
+    "40x30":   (40, 30),
+    "40x40":   (40, 40),
+    "40x50":   (40, 50),
+    "40x60":   (40, 60),
+    "40x80":   (40, 80),
+    "50x30":   (50, 30),
+    "50x50":   (50, 50),
+    "50x80":   (50, 80),
 }
 
 # Cable label roll definition — maps the physical roll to its component regions
@@ -64,6 +84,7 @@ RFID_BARCODE_DB = {
     "6972842743596": {"size_key": "15x50",   "model": "T15*50-125",      "count": 125},
     "01222281":      {"size_key": "12x40",   "model": "T12*40-155",      "count": 155},
     "6972842743787": {"size_key": "12.5x74", "model": "T12.5*74+35-60",  "count": 60, "is_cable": True},
+    "061625108":     {"size_key": "50x30",   "model": "T50*30-80WHITE",  "count": 80},
 }
 
 # RFID label counts are inflated by this factor (extra labels for calibration/waste)
@@ -98,16 +119,13 @@ def _query_niimbot_cloud(barcode):
         return None
 
     d = data["data"]
-    width = d.get("width")    # label length in mm
-    height = d.get("height")  # tape width in mm
+    api_width = d.get("width")
+    api_height = d.get("height")
     is_cable = d.get("isCable", False)
     cable_len = d.get("cableLength", 0)
 
-    if not width or not height:
+    if not api_width or not api_height:
         return None
-
-    tape_w = float(height)
-    label_l = float(width)
 
     # Extract model name from English label name
     model = ""
@@ -121,6 +139,20 @@ def _query_niimbot_cloud(barcode):
     m = re.search(r"-(\d+)", model)
     if m:
         count = int(m.group(1))
+
+    # Parse tape_width and label_length from model name (e.g. "T50*30" -> 50, 30).
+    # The model name format T[tape_width]*[label_length] is authoritative.
+    # The cloud API's width/height fields use an inconsistent convention
+    # that swaps for B-series labels where tape_width > label_length.
+    dims = re.match(r"T([\d.]+)\*([\d.]+)", model)
+    if dims:
+        tape_w = float(dims.group(1))
+        label_l = float(dims.group(2))
+    else:
+        # Fallback: assume API height=tape_width, width=label_length
+        # (correct for D-series where label is longer than tape)
+        tape_w = float(api_height)
+        label_l = float(api_width)
 
     # Build size key
     size_key = f"{tape_w:g}x{label_l:g}"
@@ -181,6 +213,6 @@ def correct_rfid_count(rfid_total):
     return round(rfid_total / RFID_COUNT_FACTOR)
 
 
-def mm_to_px(mm):
-    """Convert millimeters to pixels at NIIMBOT DPI (203)."""
-    return round(mm * DPI / MM_PER_INCH)
+def mm_to_px(mm, dpi=DPI):
+    """Convert millimeters to pixels at the given DPI (default 203)."""
+    return round(mm * dpi / MM_PER_INCH)

@@ -49,11 +49,13 @@ def generate_tex(size_key, output_name=None):
         sys.exit(1)
 
     tape_w, label_l = LABEL_SIZES[size_key]
-    printable_h = min(tape_w, 12)  # D110 printhead is 12mm (96px at 203 DPI)
+    # D-series labels (<=15mm tape): cap at 12mm (D110 printhead)
+    # B-series labels (>15mm tape): cap at 50mm (B1 Pro printhead)
+    printable_h = min(tape_w, 12) if tape_w <= 15 else min(tape_w, 50)
 
-    # Landscape: long axis = paperwidth, short axis = printable height
-    pw = label_l
-    ph = printable_h
+    # Always landscape: long axis = paperwidth, short axis = paperheight
+    pw = max(label_l, printable_h)
+    ph = min(label_l, printable_h)
 
     filename = output_name if output_name else f"label_{size_key}.tex"
     if not filename.endswith(".tex"):
@@ -169,8 +171,14 @@ def find_label_size_for_geometry(pw, ph):
     return None, ph, pw  # unknown size, return as-is (ph=tape_w, pw=label_l)
 
 
-def compile_tex_to_png(tex_path, build_dir=None):
-    """Compile a .tex file to PNG. Returns (png_path, build_dir)."""
+def compile_tex_to_png(tex_path, build_dir=None, dpi=DPI, rotate=90):
+    """Compile a .tex file to PNG. Returns (png_path, build_dir).
+
+    Args:
+        rotate: Rotation in degrees applied after rasterisation.
+                D-series labels need 90° (landscape template → portrait image).
+                B-series labels with wide tape need 0° (already landscape).
+    """
     tex_path = os.path.abspath(tex_path)
     base_name = os.path.splitext(os.path.basename(tex_path))[0]
 
@@ -197,14 +205,12 @@ def compile_tex_to_png(tex_path, build_dir=None):
         print(f"Error: pdflatex did not produce PDF", file=sys.stderr)
         sys.exit(1)
 
-    print(f"Converting to PNG at {DPI} DPI...")
-    result = subprocess.run(
-        ["magick", "-density", str(DPI), pdf_path,
-         "-rotate", "90",
-         "-colorspace", "Gray", "-depth", "8",
-         png_path],
-        capture_output=True, text=True,
-    )
+    print(f"Converting to PNG at {dpi} DPI...")
+    magick_args = ["magick", "-density", str(dpi), pdf_path]
+    if rotate:
+        magick_args.extend(["-rotate", str(rotate)])
+    magick_args.extend(["-colorspace", "Gray", "-depth", "8", png_path])
+    result = subprocess.run(magick_args, capture_output=True, text=True)
     if result.returncode != 0:
         print("ImageMagick conversion failed:", file=sys.stderr)
         print(f"  {result.stderr.strip()}", file=sys.stderr)
@@ -323,18 +329,27 @@ def run_cable(front_path, back_path=None, wrap_path=None,
     print("Done.")
 
 
-def validate_roll(roll_size, actual_w, actual_h):
+def validate_roll(roll_size, actual_w, actual_h, printable_mm=None, dpi=DPI):
     """Validate image dimensions against the specified roll size.
-    Returns True if valid, prints error and returns False if not."""
+    Returns True if valid, prints error and returns False if not.
+
+    Args:
+        printable_mm: Printhead width in mm. If None, infers from label size
+                      (12mm for D-series, tape width for B-series).
+        dpi: Printer DPI for pixel conversion (default 203).
+    """
     if roll_size not in LABEL_SIZES:
         print(f"Error: unknown roll size '{roll_size}'", file=sys.stderr)
         print(f"Options: {', '.join(LABEL_SIZES)}", file=sys.stderr)
         return False
 
     tape_w, label_l = LABEL_SIZES[roll_size]
+    if printable_mm is None:
+        printable_mm = min(tape_w, 12) if tape_w <= 15 else tape_w
+    actual_printable = min(tape_w, printable_mm)
     # After 90° rotation, image is portrait: width=tape_w, height=label_l
-    expected_w = mm_to_px(min(tape_w, PRINTABLE_HEIGHT_MM))
-    expected_h = mm_to_px(label_l)
+    expected_w = mm_to_px(actual_printable, dpi)
+    expected_h = mm_to_px(label_l, dpi)
     tolerance = 10  # pixels
 
     if abs(actual_w - expected_w) > tolerance or abs(actual_h - expected_h) > tolerance:
@@ -344,7 +359,7 @@ def validate_roll(roll_size, actual_w, actual_h):
               f"({actual_w * MM_PER_INCH / DPI:.1f}mm x {actual_h * MM_PER_INCH / DPI:.1f}mm)",
               file=sys.stderr)
         print(f"  Roll:     {expected_w}x{expected_h}px "
-              f"({min(tape_w, PRINTABLE_HEIGHT_MM)}mm x {label_l}mm)",
+              f"({actual_printable}mm x {label_l}mm)",
               file=sys.stderr)
         if is_cable_size(roll_size):
             print(f"  Hint: cable labels have multiple template sizes. "
@@ -375,18 +390,33 @@ def run_print(tex_path, density=3, rotate=0, quantity=1, label_type=1, model=Non
     tex_path = os.path.abspath(tex_path)
     base_name = os.path.splitext(os.path.basename(tex_path))[0]
 
+    # Determine DPI from model (needed for compilation)
+    compile_dpi = DPI  # default 203
+    printer = get_printer(model)
+    if hasattr(printer, 'DPI'):
+        compile_dpi = printer.DPI
+
     # Parse geometry for sanity checking
     pw, ph = parse_geometry_from_tex(tex_path)
     size_name, tape_w, label_l = None, None, None
     if pw and ph:
         size_name, tape_w, label_l = find_label_size_for_geometry(pw, ph)
 
+    # D-series (tape < label): rotate 90° to convert landscape template to portrait
+    # B-series (tape >= label): template is already landscape, no rotation needed
+    compile_rotate = 90
+    printer_printable = getattr(printer, 'PRINTABLE_HEIGHT_MM', 12)
+    if label_l and printer_printable >= label_l:
+        compile_rotate = 0
+
     # Use compile_tex_to_png helper
-    png_path, build_dir = compile_tex_to_png(tex_path)
+    png_path, build_dir = compile_tex_to_png(tex_path, dpi=compile_dpi, rotate=compile_rotate)
 
     # Step 3: Sanity check dimensions
     img = Image.open(png_path)
     actual_w, actual_h = img.width, img.height
+
+    printable_mm = getattr(printer, 'PRINTABLE_HEIGHT_MM', 12)
 
     # --fit: resize image to match label dimensions
     if fit:
@@ -394,8 +424,9 @@ def run_print(tex_path, density=3, rotate=0, quantity=1, label_type=1, model=Non
         fit_size = roll or size_name
         if fit_size and fit_size in LABEL_SIZES:
             fit_tw, fit_ll = LABEL_SIZES[fit_size]
-            target_w = mm_to_px(min(fit_tw, PRINTABLE_HEIGHT_MM))
-            target_h = mm_to_px(fit_ll)
+            fit_printable = min(fit_tw, printable_mm)
+            target_w = mm_to_px(fit_printable, compile_dpi)
+            target_h = mm_to_px(fit_ll, compile_dpi)
             if actual_w != target_w or actual_h != target_h:
                 if no_stretch:
                     # Preserve aspect ratio: scale to fit within target, center
@@ -425,13 +456,13 @@ def run_print(tex_path, density=3, rotate=0, quantity=1, label_type=1, model=Non
 
     # Validate against --roll if specified (hard error)
     if roll:
-        if not validate_roll(roll, actual_w, actual_h):
+        if not validate_roll(roll, actual_w, actual_h, printable_mm, compile_dpi):
             sys.exit(1)
         print(f"Roll validation OK: image matches {roll}")
     elif tape_w and label_l:
         # Soft warning from geometry parsing
-        expected_w = mm_to_px(tape_w)
-        expected_h = mm_to_px(label_l)
+        expected_w = mm_to_px(tape_w, compile_dpi)
+        expected_h = mm_to_px(label_l, compile_dpi)
         tolerance = 5  # pixels
         if abs(actual_w - expected_w) > tolerance or abs(actual_h - expected_h) > tolerance:
             print(f"Warning: image is {actual_w}x{actual_h}px, "
@@ -445,7 +476,6 @@ def run_print(tex_path, density=3, rotate=0, quantity=1, label_type=1, model=Non
     if rotate != 0:
         img = img.rotate(-rotate, expand=True)
 
-    printer = get_printer(model)
     try:
         name = asyncio.run(printer.connect())
         print(f"Connected to {name}")
@@ -469,7 +499,7 @@ def run_print(tex_path, density=3, rotate=0, quantity=1, label_type=1, model=Non
 
         # Validate image against detected/specified roll
         if roll:
-            if not validate_roll(roll, actual_w, actual_h):
+            if not validate_roll(roll, actual_w, actual_h, printable_mm, compile_dpi):
                 sys.exit(1)
             print(f"Roll validation OK: image matches {roll}")
 
@@ -598,10 +628,13 @@ async def _print_images_async(images, printer, roll, density, rotate, quantity,
             sys.exit(1)
 
         tape_w, label_l = LABEL_SIZES[roll]
-        target_w = mm_to_px(min(tape_w, PRINTABLE_HEIGHT_MM))
-        target_h = mm_to_px(label_l)
+        printer_dpi = getattr(printer, 'DPI', DPI)
+        printable_mm = getattr(printer, 'PRINTABLE_HEIGHT_MM', 12)
+        actual_printable = min(tape_w, printable_mm)
+        target_w = mm_to_px(actual_printable, printer_dpi)
+        target_h = mm_to_px(label_l, printer_dpi)
         print(f"Target label: {roll} ({target_w}x{target_h}px, "
-              f"{min(tape_w, PRINTABLE_HEIGHT_MM)}mm x {label_l}mm)")
+              f"{actual_printable}mm x {label_l}mm @ {printer_dpi} DPI)")
 
         total = len(images)
         for idx, (filename, img) in enumerate(images):

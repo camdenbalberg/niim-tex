@@ -18,7 +18,7 @@ try:
 except ImportError:
     pass
 
-from niim_tex import LABEL_SIZES, PRINTABLE_HEIGHT_MM, lookup_rfid_barcode, correct_rfid_count, mm_to_px
+from niim_tex import DPI, LABEL_SIZES, PRINTABLE_HEIGHT_MM, lookup_rfid_barcode, correct_rfid_count, mm_to_px
 from niim_tex.models import get_printer
 
 
@@ -114,7 +114,8 @@ def _calc_tight_fit(img_w, img_h, strip_w_px, strip_h_px, tolerance, max_width=1
 
 def prepare_image(path, label_size, grid_width=1, force_height=None,
                   force_aspect_ratio=None, dither=True, threshold=128,
-                  crop_bottom=None, tight_fit=None):
+                  crop_bottom=None, tight_fit=None,
+                  printable_mm=PRINTABLE_HEIGHT_MM, dpi=DPI):
     """Load, resize, convert to B&W, and slice into label grid strips.
 
     Args:
@@ -122,10 +123,12 @@ def prepare_image(path, label_size, grid_width=1, force_height=None,
                      below this fraction (e.g. 0.2 = remove if <20% used).
         tight_fit:   If set (float), auto-calculate the optimal grid width (columns)
                      so the bottom row is filled within this tolerance (e.g. 0.05 = 5%).
+        printable_mm: Printhead width in mm (default 12 for D110, 50 for B1 Pro).
+        dpi: Printer DPI (default 203 for D110, 300 for B1 Pro).
     """
     tape_w, label_l = label_size
-    strip_h_px = mm_to_px(PRINTABLE_HEIGHT_MM)  # 96px per strip row
-    strip_w_px = mm_to_px(label_l)
+    strip_h_px = mm_to_px(min(tape_w, printable_mm), dpi)
+    strip_w_px = mm_to_px(label_l, dpi)
 
     img = open_image(path).convert("RGB")
 
@@ -397,11 +400,26 @@ def main():
 
     label_size = LABEL_SIZES[args.size]
     tape_w, label_l = label_size
-    strip_h_px = mm_to_px(PRINTABLE_HEIGHT_MM)
-    strip_w_px = mm_to_px(label_l)
+
+    # Get model-specific DPI and printable width
+    printer_dpi = DPI
+    printer_printable_mm = PRINTABLE_HEIGHT_MM
+    if args.model:
+        p = get_printer(args.model)
+        printer_dpi = getattr(p, 'DPI', DPI)
+        printer_printable_mm = getattr(p, 'PRINTABLE_HEIGHT_MM', PRINTABLE_HEIGHT_MM)
+    elif tape_w > 15:
+        # B-series label without --model: use B1 defaults
+        from niim_tex.models.b1 import B1Printer
+        printer_dpi = B1Printer.DPI
+        printer_printable_mm = B1Printer.PRINTABLE_HEIGHT_MM
+
+    actual_printable = min(tape_w, printer_printable_mm)
+    strip_h_px = mm_to_px(actual_printable, printer_dpi)
+    strip_w_px = mm_to_px(label_l, printer_dpi)
 
     print(f"Label: {args.size} ({tape_w}mm tape, {label_l}mm length)")
-    print(f"Strip: {strip_w_px}x{strip_h_px}px ({label_l}mm x {PRINTABLE_HEIGHT_MM}mm)")
+    print(f"Strip: {strip_w_px}x{strip_h_px}px ({label_l}mm x {actual_printable}mm @ {printer_dpi} DPI)")
     if args.width > 1:
         print(f"Grid width: {args.width} labels")
 
@@ -435,12 +453,14 @@ def main():
         dither=args.dither, threshold=args.threshold,
         crop_bottom=args.crop_bottom,
         tight_fit=args.tight_fit,
+        printable_mm=printer_printable_mm,
+        dpi=printer_dpi,
     )
 
     n_rows, n_cols = grid_shape
     n = len(strips)
     assembled_w_mm = n_cols * label_l
-    assembled_h_mm = n_rows * PRINTABLE_HEIGHT_MM
+    assembled_h_mm = n_rows * actual_printable
     print(f"Image sliced into {n_rows}x{n_cols} grid ({n} labels, {assembled_w_mm}mm x {assembled_h_mm}mm assembled)")
 
     # Show grid map for multi-column layouts
