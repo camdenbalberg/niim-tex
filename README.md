@@ -117,6 +117,24 @@ python niim_tex.py print label.tex --density 3 --quantity 2 --rotate 0 --label-t
 - `--fit` — Resize the compiled image to fit the label dimensions (target size from `--roll` or `.tex` geometry)
 - `--no-stretch` — With `--fit`: preserve aspect ratio and center the image instead of stretching to fill
 
+## Image Options
+
+```
+python niim_tex.py image photo.jpg --roll 50x30 --model b1 --gamma 0.6 --preview
+```
+
+- `--roll SIZE` — Label roll size (e.g. `50x30`). Auto-detected from RFID if omitted
+- `--density N` — Print darkness, 1-5 (default: 3)
+- `--gamma G` — Gamma correction before dithering: `<1.0` lightens (opens up darks), `>1.0` darkens (default: 1.0). Useful for higher-DPI printers where dither dots are finer and darks fill in more solidly
+- `--preview` — Open the processed B&W image in the system viewer instead of printing. Does not connect to the printer. Requires `--roll`
+- `--dither` / `--no-dither` — Floyd-Steinberg dithering (default) or hard threshold
+- `--threshold N` — B&W threshold 0-255, used with `--no-dither` (default: 128)
+- `--no-stretch` — Preserve aspect ratio and center instead of stretching to fill
+- `--align [start|center|end]` — With `--no-stretch`: align content within label (default: center)
+- `--rotate DEG` — Additional rotation: 0, 90, 180, 270 (default: 0)
+
+Images are auto-rotated so the long edge matches the label's long edge.
+
 ## Roll Detection
 
 The printer reads the RFID tag embedded in each label roll. The tag's barcode field (e.g. `T15*50-125`) encodes the tape width, label length, and count per roll. Both `print` and `mosaic` automatically read the RFID after connecting and validate that the image dimensions match the loaded roll before printing. If there's a mismatch, the print is aborted with an error.
