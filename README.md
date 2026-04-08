@@ -120,18 +120,21 @@ python niim_tex.py print label.tex --density 3 --quantity 2 --rotate 0 --label-t
 ## Image Options
 
 ```
-python niim_tex.py image photo.jpg --roll 50x30 --model b1 --gamma 0.6 --preview
+python niim_tex.py image photo.jpg --roll 50x30 --model b1 --crop --preview
 ```
 
 - `--roll SIZE` — Label roll size (e.g. `50x30`). Auto-detected from RFID if omitted
 - `--density N` — Print darkness, 1-5 (default: 3)
-- `--gamma G` — Gamma correction before dithering: `<1.0` lightens (opens up darks), `>1.0` darkens (default: 1.0). Useful for higher-DPI printers where dither dots are finer and darks fill in more solidly
-- `--preview` — Open the processed B&W image in the system viewer instead of printing. Does not connect to the printer. Requires `--roll`
+- `--gamma G` — Gamma correction before dithering: `<1.0` lightens (opens up darks), `>1.0` darkens. Default: `0.55` for B1 Pro (compensates for 300 DPI dot density), `1.0` for D110
+- `--preview` — Open the processed B&W image in the system viewer instead of printing. Does not connect to the printer. Requires `--roll`. Directories are shown as a single contact sheet
+- `--crop` — Scale up to fill the entire label and crop overflow (no white space). Use `--align` to control which edge is preserved
+- `--no-stretch` — Preserve aspect ratio and center instead of stretching to fill (letterbox with white space)
+- `--align [start|center|end]` — With `--no-stretch` or `--crop`: control alignment/crop anchor (default: center)
 - `--dither` / `--no-dither` — Floyd-Steinberg dithering (default) or hard threshold
 - `--threshold N` — B&W threshold 0-255, used with `--no-dither` (default: 128)
-- `--no-stretch` — Preserve aspect ratio and center instead of stretching to fill
-- `--align [start|center|end]` — With `--no-stretch`: align content within label (default: center)
 - `--rotate DEG` — Additional rotation: 0, 90, 180, 270 (default: 0)
+
+**Resize modes:** default stretches to fill (may distort), `--no-stretch` fits inside with white space, `--crop` fills completely by zooming in and trimming overflow.
 
 Images are auto-rotated so the long edge matches the label's long edge.
 
