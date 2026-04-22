@@ -453,11 +453,31 @@ class PrintPanel(QWidget):
                 name = os.path.basename(p)
                 self._images.append((name, img))
                 self.file_list.addItem(name)
+
+                # Auto-detect roll size from image dimensions
+                if len(self._images) == 1:
+                    self._auto_detect_roll(img, printer_dpi)
             except Exception as e:
                 QMessageBox.warning(self, "Open Error", f"Could not open {os.path.basename(p)}:\n{e}")
 
         if self.file_list.count() > 0 and self.file_list.currentRow() < 0:
             self.file_list.setCurrentRow(0)
+
+    def _auto_detect_roll(self, img, dpi):
+        """Try to match image dimensions to a known label size and set the roll combo."""
+        from niim_tex import MM_PER_INCH
+        w_mm = round(img.width * MM_PER_INCH / dpi)
+        h_mm = round(img.height * MM_PER_INCH / dpi)
+        # Image could be either orientation — try both
+        for name, (tape_w, label_l) in LABEL_SIZES.items():
+            printable = min(tape_w, 50) if tape_w > 15 else min(tape_w, 12)
+            # Match: (width≈printable, height≈label) or (width≈label, height≈printable)
+            if ((abs(w_mm - printable) <= 2 and abs(h_mm - label_l) <= 2) or
+                (abs(w_mm - label_l) <= 2 and abs(h_mm - printable) <= 2)):
+                idx = self.roll_combo.findData(name)
+                if idx >= 0:
+                    self.roll_combo.setCurrentIndex(idx)
+                    return
 
     def _on_clear(self):
         self._images.clear()
