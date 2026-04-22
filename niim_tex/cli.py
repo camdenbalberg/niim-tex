@@ -531,12 +531,19 @@ def run_print(tex_path, density=3, rotate=0, quantity=1, label_type=1, model=Non
     print("Done.")
 
 
-def open_image(path):
-    """Open an image file, falling back to ImageMagick for unsupported formats."""
-    try:
-        return Image.open(path)
-    except Exception:
-        pass
+def open_image(path, dpi=300):
+    """Open an image file, falling back to ImageMagick for unsupported formats.
+
+    Args:
+        dpi: Resolution for rasterising vector/PDF inputs (default 300).
+    """
+    # PDFs need ImageMagick with explicit DPI — skip Pillow attempt
+    is_pdf = path.lower().endswith(".pdf")
+    if not is_pdf:
+        try:
+            return Image.open(path)
+        except Exception:
+            pass
 
     # Fallback: use ImageMagick to convert to PNG
     if not shutil.which("magick"):
@@ -548,9 +555,12 @@ def open_image(path):
     tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
     tmp.close()
     try:
+        cmd = ["magick"]
+        if is_pdf:
+            cmd.extend(["-density", str(dpi)])
+        cmd.extend([path, tmp.name])
         result = subprocess.run(
-            ["magick", path, tmp.name],
-            capture_output=True, text=True,
+            cmd, capture_output=True, text=True,
         )
         if result.returncode != 0:
             raise RuntimeError(
@@ -762,7 +772,7 @@ async def _print_images_async(images, printer, roll, density, rotate, quantity,
 # Image extensions recognized for directory scanning
 IMAGE_EXTENSIONS = {
     ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tiff", ".tif",
-    ".webp", ".avif", ".heif", ".heic", ".svg", ".ico",
+    ".webp", ".avif", ".heif", ".heic", ".svg", ".ico", ".pdf",
 }
 
 
@@ -793,15 +803,18 @@ def run_image(image_path, density=3, rotate=0, quantity=1, label_type=1,
         print(f"Error: file not found: {image_path}", file=sys.stderr)
         sys.exit(1)
 
+    # Get printer DPI for PDF rasterisation
+    printer = get_printer(model)
+    img_dpi = getattr(printer, 'DPI', DPI)
+
     # Open and convert all images to greyscale
     images = []
     for p in paths:
-        img = open_image(p)
+        img = open_image(p, dpi=img_dpi)
         print(f"Opened {os.path.basename(p)}: {img.width}x{img.height}px, mode={img.mode}")
         images.append((os.path.basename(p), img.convert("L")))
 
     # Run all printer interaction in a single event loop
-    printer = get_printer(model)
     asyncio.run(_print_images_async(
         images, printer, roll, density, rotate, quantity, label_type,
         dither, threshold, no_stretch, crop, align, delay, gamma, preview,
