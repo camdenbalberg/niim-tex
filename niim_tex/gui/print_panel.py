@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
     QGraphicsPixmapItem,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
-from PyQt6.QtGui import QImage, QPixmap, QWheelEvent, QKeySequence, QShortcut
+from PyQt6.QtGui import QImage, QPixmap, QPainter, QWheelEvent, QKeySequence, QShortcut
 
 from PIL import Image
 
@@ -58,6 +58,9 @@ class ZoomablePreview(QGraphicsView):
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        # Nearest-neighbor rendering — keeps dither dots crisp instead of
+        # blending them to gray mush when zoomed out
+        self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
 
         # Keyboard zoom shortcuts
         QShortcut(QKeySequence("Ctrl+="), self, lambda: self._zoom_by(1.25))
