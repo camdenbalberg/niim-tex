@@ -48,6 +48,8 @@ def pil_to_qpixmap(pil_image):
 class ZoomablePreview(QGraphicsView):
     """Image preview widget with auto-fit and manual zoom (Ctrl+scroll, Ctrl+/-)."""
 
+    zoom_changed = pyqtSignal(int)  # emits zoom percentage
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._scene = QGraphicsScene(self)
@@ -90,9 +92,10 @@ class ZoomablePreview(QGraphicsView):
         """Apply a relative zoom factor."""
         self._auto_fit = False
         self._zoom *= factor
-        self._zoom = max(0.1, min(self._zoom, 20.0))
+        self._zoom = max(0.01, min(self._zoom, 20.0))
         self.resetTransform()
         self.scale(self._zoom, self._zoom)
+        self.zoom_changed.emit(round(self._zoom * 100))
 
     def wheelEvent(self, event: QWheelEvent):
         """Ctrl+scroll to zoom, plain scroll to pan."""
@@ -312,6 +315,18 @@ class PrintPanel(QWidget):
         self.contrast_spin = _slider_row("Contrast:", 0.1, 3.0, 1.0, 0.05, 2)
         self.sharpness_spin = _slider_row("Sharpness:", 0.0, 5.0, 1.0, 0.1, 1)
 
+        dpi_row = QHBoxLayout()
+        lbl = QLabel("DPI:")
+        lbl.setFixedWidth(70)
+        dpi_row.addWidget(lbl)
+        self.dpi_spin = QSpinBox()
+        self.dpi_spin.setRange(72, 1200)
+        self.dpi_spin.setValue(300)
+        self.dpi_spin.setSingleStep(50)
+        self.dpi_spin.valueChanged.connect(self._schedule_preview)
+        dpi_row.addWidget(self.dpi_spin)
+        debug_layout.addLayout(dpi_row)
+
         left_layout.addWidget(debug_group)
 
         # Quantity
@@ -367,15 +382,24 @@ class PrintPanel(QWidget):
         self.render_combo.currentIndexChanged.connect(self._on_render_changed)
         preview_header.addWidget(self.render_combo)
 
-        self.zoom_combo = QComboBox()
-        self.zoom_combo.addItems(["Fit", "25%", "50%", "75%", "100%", "150%", "200%"])
-        self.zoom_combo.setToolTip("Default zoom level")
-        self.zoom_combo.currentIndexChanged.connect(self._on_zoom_preset)
-        preview_header.addWidget(self.zoom_combo)
+        self.zoom_spin = QSpinBox()
+        self.zoom_spin.setRange(1, 500)
+        self.zoom_spin.setValue(100)
+        self.zoom_spin.setSuffix("%")
+        self.zoom_spin.setToolTip("Zoom level — match to physical label for 1:1 comparison")
+        self.zoom_spin.setFixedWidth(80)
+        self.zoom_spin.valueChanged.connect(self._on_zoom_spin)
+        preview_header.addWidget(self.zoom_spin)
+
+        fit_btn = QPushButton("Fit")
+        fit_btn.setFixedWidth(35)
+        fit_btn.clicked.connect(self._on_zoom_fit)
+        preview_header.addWidget(fit_btn)
 
         right_layout.addLayout(preview_header)
 
         self.preview_view = ZoomablePreview()
+        self.preview_view.zoom_changed.connect(self._sync_zoom_spin)
         right_layout.addWidget(self.preview_view, 1)
 
         self.info_label = QLabel("Ctrl+Scroll to zoom, Ctrl+0 to fit")
@@ -452,13 +476,12 @@ class PrintPanel(QWidget):
     def _get_target_dims(self):
         roll = self.roll_combo.currentData()
         if not roll or roll not in LABEL_SIZES:
-            # Try to get from printer RFID
             return None, None
         tape_w, label_l = LABEL_SIZES[roll]
-        printer_dpi = getattr(self.ble.printer, 'DPI', DPI) if self.ble.printer else 300
+        dpi = self.dpi_spin.value()
         printable_mm = getattr(self.ble.printer, 'PRINTABLE_HEIGHT_MM', 50) if self.ble.printer else 50
         actual_printable = min(tape_w, printable_mm)
-        return mm_to_px(actual_printable, printer_dpi), mm_to_px(label_l, printer_dpi)
+        return mm_to_px(actual_printable, dpi), mm_to_px(label_l, dpi)
 
     def _generate_preview(self):
         if self._current_idx < 0 or self._current_idx >= len(self._images):
@@ -488,22 +511,30 @@ class PrintPanel(QWidget):
         self._preview_worker.finished.connect(self._on_preview_done)
         self._preview_worker.start()
 
+    def _sync_zoom_spin(self, pct):
+        self.zoom_spin.blockSignals(True)
+        self.zoom_spin.setValue(pct)
+        self.zoom_spin.blockSignals(False)
+
     def _on_render_changed(self, idx):
         smooth = idx == 1  # 0=Nearest, 1=Smooth
         self.preview_view.setRenderHint(
             QPainter.RenderHint.SmoothPixmapTransform, smooth)
         self.preview_view.viewport().update()
 
-    def _on_zoom_preset(self, idx):
-        text = self.zoom_combo.currentText()
-        if text == "Fit":
-            self.preview_view.fit_to_view()
-        else:
-            pct = int(text.replace("%", "")) / 100.0
-            self.preview_view._auto_fit = False
-            self.preview_view._zoom = pct
-            self.preview_view.resetTransform()
-            self.preview_view.scale(pct, pct)
+    def _on_zoom_spin(self, pct):
+        self.preview_view._auto_fit = False
+        scale = pct / 100.0
+        self.preview_view._zoom = scale
+        self.preview_view.resetTransform()
+        self.preview_view.scale(scale, scale)
+
+    def _on_zoom_fit(self):
+        self.preview_view.fit_to_view()
+        # Update spin to reflect the fit zoom level
+        self.zoom_spin.blockSignals(True)
+        self.zoom_spin.setValue(round(self.preview_view._zoom * 100))
+        self.zoom_spin.blockSignals(False)
 
     def _on_preview_done(self, pixmap, info):
         if pixmap:
