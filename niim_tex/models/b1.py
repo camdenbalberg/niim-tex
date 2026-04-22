@@ -100,11 +100,23 @@ class B1Printer(NiimbotPrinter):
             await self._b1_cmd(0x13, struct.pack(">HH", img.height, img.width))
             await self._b1_cmd(0x15, struct.pack(">H", quantity))          # setQuantity
 
-            # 2. Send image rows — write-with-response, no artificial delay.
-            #    The BLE ACK naturally paces each row. response=False crashes
-            #    the B1's BLE connection; response=True (default) is required.
-            for pkt in packets:
-                await self.client.write_gatt_char(self.char_uuid, pkt)
+            # 2. Send image rows.
+            #    Based on hass-niimbot / niimbluelib / NiimPrintX research:
+            #    - All working BLE implementations use write-without-response
+            #    - 10ms inter-row delay is the standard (100 rows/sec)
+            #    - hass-niimbot adds a periodic write-with-response every Nth
+            #      row as a flow-control gate (blocks until BLE ACK received)
+            #    - Empty rows can be compressed via command 0x84
+            BATCH = 20   # write-with-response sync every N rows
+            DELAY = 0.007  # 7ms between rows → ~140 rows/sec
+            for i, pkt in enumerate(packets):
+                if (i + 1) % BATCH == 0:
+                    # Sync write — BLE ACK acts as flow control checkpoint
+                    await self.client.write_gatt_char(self.char_uuid, pkt)
+                else:
+                    await self.client.write_gatt_char(
+                        self.char_uuid, pkt, response=False)
+                    await asyncio.sleep(DELAY)
 
             # Wait for the printer to finish rendering all buffered rows.
             # Long labels (170mm = 2008 rows) need significant processing time.

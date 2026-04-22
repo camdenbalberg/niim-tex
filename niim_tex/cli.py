@@ -679,15 +679,15 @@ def _open_contact_sheet(labels, names, label_w, label_h):
 
 async def _print_images_async(images, printer, roll, density, rotate, quantity,
                               label_type, dither, threshold, no_stretch, crop, align, delay,
-                              gamma=None, preview=False):
+                              gamma=None, preview=False, save=False, source_path=None):
     """Async core — connect once, print one or more images, disconnect."""
     try:
-        if not preview:
+        if not preview and not save:
             name = await printer.connect()
             print(f"Connected to {name}")
 
         # Auto-detect roll from RFID if --roll not specified
-        if not roll and not preview:
+        if not roll and not preview and not save:
             try:
                 rfid = await printer.get_rfid()
                 if rfid and rfid.get("barcode"):
@@ -703,8 +703,8 @@ async def _print_images_async(images, printer, roll, density, rotate, quantity,
             except Exception:
                 pass  # RFID read failed, continue without validation
 
-        if not roll and preview:
-            print("Error: --preview requires --roll SIZE (printer not connected).", file=sys.stderr)
+        if not roll and (preview or save):
+            print("Error: --preview/--save requires --roll SIZE (printer not connected).", file=sys.stderr)
             print(f"Options: {', '.join(LABEL_SIZES)}", file=sys.stderr)
             return
         if not roll:
@@ -738,6 +738,15 @@ async def _print_images_async(images, printer, roll, density, rotate, quantity,
             label = _prepare_label_image(img, target_w, target_h, dither, threshold,
                                          rotate, no_stretch, align, gamma, crop)
 
+            if save:
+                # Save full-resolution B&W image next to source file with DPI metadata
+                src_dir = os.path.dirname(os.path.abspath(source_path)) if source_path else os.getcwd()
+                base = os.path.splitext(filename)[0]
+                out_path = os.path.join(src_dir, f"{base}_print.png")
+                label.save(out_path, dpi=(printer_dpi, printer_dpi))
+                print(f"Saved: {out_path} ({label.width}x{label.height}px @ {printer_dpi} DPI)")
+                continue
+
             if preview:
                 preview_labels.append(label)
                 preview_names.append(filename)
@@ -755,7 +764,9 @@ async def _print_images_async(images, printer, roll, density, rotate, quantity,
             if idx < total - 1:
                 await printer.wait_ready(delay=delay)
 
-        if preview:
+        if save:
+            print(f"Saved {total} image(s). Transfer to phone and print via NIIM app.")
+        elif preview:
             _open_contact_sheet(preview_labels, preview_names, target_w, target_h)
         else:
             print(f"All {total} image(s) printed.")
@@ -765,7 +776,7 @@ async def _print_images_async(images, printer, roll, density, rotate, quantity,
         print(f"Print failed: {e}", file=sys.stderr)
         sys.exit(1)
     finally:
-        if not preview:
+        if not preview and not save:
             await printer.disconnect()
 
 
@@ -788,7 +799,8 @@ def _collect_images_from_dir(dir_path):
 
 def run_image(image_path, density=3, rotate=0, quantity=1, label_type=1,
               model=None, roll=None, dither=True, threshold=128,
-              no_stretch=False, crop=False, align=None, delay=1.0, gamma=None, preview=False):
+              no_stretch=False, crop=False, align=None, delay=1.0, gamma=None,
+              preview=False, save=False):
     """Print image file(s) directly on a NIIMBOT label. Accepts a file or directory."""
     # Collect file(s)
     if os.path.isdir(image_path):
@@ -817,7 +829,8 @@ def run_image(image_path, density=3, rotate=0, quantity=1, label_type=1,
     # Run all printer interaction in a single event loop
     asyncio.run(_print_images_async(
         images, printer, roll, density, rotate, quantity, label_type,
-        dither, threshold, no_stretch, crop, align, delay, gamma, preview,
+        dither, threshold, no_stretch, crop, align, delay, gamma, preview, save,
+        source_path=image_path,
     ))
 
 
@@ -1101,6 +1114,8 @@ def main():
                                    "Default: 0.55 for B1 Pro (300 DPI), 1.0 for D110 (203 DPI)")
     image_parser.add_argument("--preview", action="store_true",
                               help="Open a preview of the processed B&W image instead of printing")
+    image_parser.add_argument("--save", action="store_true",
+                              help="Save the processed B&W image next to the source file instead of printing")
     image_parser.add_argument("--delay", type=float, default=1.0, metavar="SEC",
                               help="Seconds between prints for paper advance (default: 1.0)")
 
@@ -1160,7 +1175,8 @@ def main():
                   quantity=args.quantity, label_type=args.label_type, model=model,
                   roll=args.roll, dither=args.dither, threshold=args.threshold,
                   no_stretch=args.no_stretch, crop=args.crop, align=args.align,
-                  delay=args.delay, gamma=args.gamma, preview=args.preview)
+                  delay=args.delay, gamma=args.gamma, preview=args.preview,
+                  save=args.save)
     elif args.command == "feed":
         run_feed(model)
     elif args.command == "test-page":
