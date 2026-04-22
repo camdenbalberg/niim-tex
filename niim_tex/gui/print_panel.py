@@ -58,9 +58,8 @@ class ZoomablePreview(QGraphicsView):
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
-        # Nearest-neighbor rendering — keeps dither dots crisp instead of
-        # blending them to gray mush when zoomed out
-        self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
+        # Smooth scaling for grayscale preview
+        self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
 
         # Keyboard zoom shortcuts
         QShortcut(QKeySequence("Ctrl+="), self, lambda: self._zoom_by(1.25))
@@ -111,7 +110,13 @@ class ZoomablePreview(QGraphicsView):
 
 
 class PreviewWorker(QThread):
-    """Background thread for image processing (keeps UI responsive)."""
+    """Background thread for image processing (keeps UI responsive).
+
+    The preview shows the GRAYSCALE image (with gamma applied, before
+    dithering) because that represents what the print actually looks like
+    to the human eye at 300 DPI.  Raw dithered pixels look terrible on a
+    monitor — the dots don't visually integrate at screen resolution.
+    """
     finished = pyqtSignal(object, str)  # (QPixmap, info_text)
 
     def __init__(self, image, target_w, target_h, dither, threshold,
@@ -129,12 +134,16 @@ class PreviewWorker(QThread):
 
     def run(self):
         try:
-            label = _prepare_label_image(
+            # Process image up to gamma (skip dithering for preview)
+            preview = _prepare_label_image(
                 self.image, self.target_w, self.target_h,
-                self.dither, self.threshold, 0,
+                False, self.threshold, 0,  # dither=False
                 self.no_stretch, self.align, self.gamma, self.crop)
-            pixmap = pil_to_qpixmap(label)
-            info = f"{label.width}x{label.height}px"
+            # Invert so it looks like white-on-black thermal print
+            from PIL import ImageOps
+            preview = ImageOps.invert(preview.convert("L"))
+            pixmap = pil_to_qpixmap(preview)
+            info = f"{preview.width}x{preview.height}px"
             self.finished.emit(pixmap, info)
         except Exception as e:
             self.finished.emit(None, f"Error: {e}")
