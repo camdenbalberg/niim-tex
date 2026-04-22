@@ -55,8 +55,8 @@ class ZoomablePreview(QGraphicsView):
         self._scene = QGraphicsScene(self)
         self.setScene(self._scene)
         self._pixmap_item = None
-        self._auto_fit = True  # auto-zoom to fit on new images
-        self._zoom = 1.0
+        self._auto_fit = False
+        self._zoom = 0.30  # 30% = real-life size on most monitors
 
         self.setStyleSheet("background-color: #ecf0f1; border: 1px solid #bdc3c7;")
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -71,13 +71,13 @@ class ZoomablePreview(QGraphicsView):
         QShortcut(QKeySequence("Ctrl+0"), self, self.fit_to_view)
 
     def set_pixmap(self, pixmap):
-        """Set a new image and auto-fit if enabled."""
+        """Set a new image at the current zoom level."""
         self._scene.clear()
         if pixmap and not pixmap.isNull():
             self._pixmap_item = self._scene.addPixmap(pixmap)
             self._scene.setSceneRect(pixmap.rect().toRectF())
-            if self._auto_fit:
-                self.fit_to_view()
+            self.resetTransform()
+            self.scale(self._zoom, self._zoom)
         else:
             self._pixmap_item = None
 
@@ -384,7 +384,7 @@ class PrintPanel(QWidget):
 
         self.zoom_spin = QSpinBox()
         self.zoom_spin.setRange(1, 500)
-        self.zoom_spin.setValue(100)
+        self.zoom_spin.setValue(30)
         self.zoom_spin.setSuffix("%")
         self.zoom_spin.setToolTip("Zoom level — match to physical label for 1:1 comparison")
         self.zoom_spin.setFixedWidth(80)
