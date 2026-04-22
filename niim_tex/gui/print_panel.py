@@ -126,8 +126,7 @@ class PreviewWorker(QThread):
 
     def __init__(self, image, target_w, target_h, dither, threshold,
                  no_stretch, crop, align, gamma,
-                 preview_brightness=1.0, preview_contrast=1.0,
-                 preview_sharpness=1.0, parent=None):
+                 dot_spread=0.0, darken=1.0, parent=None):
         super().__init__(parent)
         self.image = image
         self.target_w = target_w
@@ -138,26 +137,30 @@ class PreviewWorker(QThread):
         self.crop = crop
         self.align = align
         self.gamma = gamma
-        self.preview_brightness = preview_brightness
-        self.preview_contrast = preview_contrast
-        self.preview_sharpness = preview_sharpness
+        self.dot_spread = dot_spread
+        self.darken = darken
 
     def run(self):
         try:
-            # Standard pipeline (same as print/save — untouched by preview corrections)
+            from PIL import ImageFilter
+
+            # Standard pipeline (same as print/save)
             label = _prepare_label_image(
                 self.image, self.target_w, self.target_h,
                 self.dither, self.threshold, 0,
                 self.no_stretch, self.align, self.gamma, self.crop)
 
-            # Apply preview-only corrections to simulate thermal print appearance
+            # Display-only corrections to simulate thermal print appearance
             preview = label.convert("L")
-            if self.preview_brightness != 1.0:
-                preview = ImageEnhance.Brightness(preview).enhance(self.preview_brightness)
-            if self.preview_contrast != 1.0:
-                preview = ImageEnhance.Contrast(preview).enhance(self.preview_contrast)
-            if self.preview_sharpness != 1.0:
-                preview = ImageEnhance.Sharpness(preview).enhance(self.preview_sharpness)
+
+            # Dot spread: blur simulates thermal dots bleeding into each other
+            if self.dot_spread > 0:
+                preview = preview.filter(ImageFilter.GaussianBlur(radius=self.dot_spread))
+
+            # Darken: gamma < 1 darkens (thermal prints are darker than screen)
+            if self.darken != 1.0:
+                lut = [min(255, int(255 * (i / 255) ** self.darken)) for i in range(256)]
+                preview = preview.point(lut)
 
             pixmap = pil_to_qpixmap(preview)
             info = f"{label.width}x{label.height}px"
@@ -310,9 +313,8 @@ class PrintPanel(QWidget):
             layout.addLayout(row)
             return spin
 
-        self.preview_brightness = _slider_row(preview_layout, "Brightness:", 0.0, 10.0, 1.0, 0.05, 2)
-        self.preview_contrast = _slider_row(preview_layout, "Contrast:", 0.0, 10.0, 1.0, 0.05, 2)
-        self.preview_sharpness = _slider_row(preview_layout, "Sharpness:", 0.0, 10.0, 1.0, 0.1, 1)
+        self.preview_dot_spread = _slider_row(preview_layout, "Dot spread:", 0.0, 10.0, 0.0, 0.1, 1)
+        self.preview_darken = _slider_row(preview_layout, "Darken:", 0.0, 5.0, 1.0, 0.05, 2)
 
         left_layout.addWidget(preview_group)
 
@@ -528,9 +530,8 @@ class PrintPanel(QWidget):
         self._preview_worker = PreviewWorker(
             img, target_w, target_h, dither, threshold,
             no_stretch, crop, align, gamma,
-            self.preview_brightness.value(),
-            self.preview_contrast.value(),
-            self.preview_sharpness.value(), self)
+            self.preview_dot_spread.value(),
+            self.preview_darken.value(), self)
         self._preview_worker.finished.connect(self._on_preview_done)
         self._preview_worker.start()
 
