@@ -134,46 +134,18 @@ class PreviewWorker(QThread):
 
     def run(self):
         try:
-            img = self.image.copy()
-
-            # Auto-rotate
-            img_landscape = img.width > img.height
-            target_landscape = self.target_w > self.target_h
-            if img_landscape != target_landscape and img.width != img.height:
-                img = img.rotate(-90, expand=True)
-
-            # Resize
-            tw, th = self.target_w, self.target_h
-            if self.crop:
-                scale = max(tw / img.width, th / img.height)
-                nw, nh = round(img.width * scale), round(img.height * scale)
-                img = img.resize((nw, nh), Image.LANCZOS)
-                cx = (nw - tw) // 2 if self.align != "start" else 0
-                cy = (nh - th) // 2 if self.align != "start" else 0
-                if self.align == "end":
-                    cx, cy = nw - tw, nh - th
-                img = img.crop((cx, cy, cx + tw, cy + th))
-            elif self.no_stretch:
-                scale = min(tw / img.width, th / img.height)
-                nw, nh = round(img.width * scale), round(img.height * scale)
-                img = img.resize((nw, nh), Image.LANCZOS)
-                canvas = Image.new("L", (tw, th), 255)
-                px = (tw - nw) // 2
-                py = (th - nh) // 2
-                if self.align == "start": py = 0
-                elif self.align == "end": py = th - nh
-                canvas.paste(img, (px, py))
-                img = canvas
-            else:
-                img = img.resize((tw, th), Image.LANCZOS)
-
-            # Gamma (on grayscale — no dithering)
-            if self.gamma and self.gamma != 1.0:
-                lut = [min(255, int(255 * (i / 255) ** self.gamma)) for i in range(256)]
-                img = img.point(lut)
-
-            pixmap = pil_to_qpixmap(img)
-            info = f"{img.width}x{img.height}px"
+            # Full processing pipeline (resize, gamma, dither/threshold)
+            label = _prepare_label_image(
+                self.image, self.target_w, self.target_h,
+                self.dither, self.threshold, 0,
+                self.no_stretch, self.align, self.gamma, self.crop)
+            # Convert 1-bit back to grayscale for display — smooth scaling
+            # blends the dither dots into the tones they represent, so the
+            # preview looks like what the print looks like to the human eye
+            # while still reflecting dither/threshold/gamma settings.
+            preview = label.convert("L")
+            pixmap = pil_to_qpixmap(preview)
+            info = f"{label.width}x{label.height}px"
             self.finished.emit(pixmap, info)
         except Exception as e:
             self.finished.emit(None, f"Error: {e}")
