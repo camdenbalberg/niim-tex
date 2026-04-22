@@ -126,7 +126,7 @@ class PreviewWorker(QThread):
 
     def __init__(self, image, target_w, target_h, dither, threshold,
                  no_stretch, crop, align, gamma,
-                 dot_spread=0.0, darken=1.0, parent=None):
+                 dot_spread=1.3, darken=4.20, black_pt=0.0, parent=None):
         super().__init__(parent)
         self.image = image
         self.target_w = target_w
@@ -139,6 +139,7 @@ class PreviewWorker(QThread):
         self.gamma = gamma
         self.dot_spread = dot_spread
         self.darken = darken
+        self.black_pt = black_pt
 
     def run(self):
         try:
@@ -157,9 +158,16 @@ class PreviewWorker(QThread):
             if self.dot_spread > 0:
                 preview = preview.filter(ImageFilter.GaussianBlur(radius=self.dot_spread))
 
-            # Darken: gamma < 1 darkens (thermal prints are darker than screen)
-            if self.darken != 1.0:
-                lut = [min(255, int(255 * (i / 255) ** self.darken)) for i in range(256)]
+            # Darken: gamma > 1 darkens (thermal prints are darker than screen)
+            # Black point: crush anything below threshold to pure black
+            bp = int(self.black_pt)
+            if self.darken != 1.0 or bp > 0:
+                lut = []
+                for i in range(256):
+                    v = int(255 * (i / 255) ** self.darken) if self.darken != 1.0 else i
+                    if v <= bp:
+                        v = 0
+                    lut.append(min(255, v))
                 preview = preview.point(lut)
 
             pixmap = pil_to_qpixmap(preview)
@@ -245,7 +253,7 @@ class PrintPanel(QWidget):
         self.gamma_spin = QDoubleSpinBox()
         self.gamma_spin.setRange(0.01, 10.0)
         self.gamma_spin.setSingleStep(0.05)
-        self.gamma_spin.setValue(0.55)
+        self.gamma_spin.setValue(0.25)
         self.gamma_spin.valueChanged.connect(self._schedule_preview)
         gamma_row.addWidget(self.gamma_spin)
         gamma_row.addStretch()
@@ -313,8 +321,9 @@ class PrintPanel(QWidget):
             layout.addLayout(row)
             return spin
 
-        self.preview_dot_spread = _slider_row(preview_layout, "Dot spread:", 0.0, 10.0, 0.0, 0.1, 1)
-        self.preview_darken = _slider_row(preview_layout, "Darken:", 0.0, 5.0, 1.0, 0.05, 2)
+        self.preview_dot_spread = _slider_row(preview_layout, "Dot spread:", 0.0, 10.0, 1.3, 0.1, 1)
+        self.preview_darken = _slider_row(preview_layout, "Darken:", 0.0, 10.0, 4.20, 0.05, 2)
+        self.preview_black_pt = _slider_row(preview_layout, "Black point:", 0.0, 255.0, 0.0, 1.0, 0)
 
         left_layout.addWidget(preview_group)
 
@@ -531,7 +540,8 @@ class PrintPanel(QWidget):
             img, target_w, target_h, dither, threshold,
             no_stretch, crop, align, gamma,
             self.preview_dot_spread.value(),
-            self.preview_darken.value(), self)
+            self.preview_darken.value(),
+            self.preview_black_pt.value(), self)
         self._preview_worker.finished.connect(self._on_preview_done)
         self._preview_worker.start()
 
