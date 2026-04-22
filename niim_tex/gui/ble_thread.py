@@ -11,8 +11,9 @@ from niim_tex.models import get_printer, MODELS
 class BleThread(QThread):
     """Dedicated thread running an asyncio event loop for BLE operations.
 
-    All printer communication goes through this thread.  The GUI dispatches
-    work via submit() and receives results via Qt signals.
+    All printer communication goes through this thread.  Operations are
+    serialised via an asyncio queue so only one BLE command runs at a time
+    (prevents start_notify/stop_notify races).
     """
 
     # Signals
@@ -27,6 +28,7 @@ class BleThread(QThread):
         super().__init__(parent)
         self.loop = None
         self.printer = None
+        self._queue = None
         self._heartbeat_task = None
         self._model_name = None
 
@@ -36,6 +38,8 @@ class BleThread(QThread):
         """Thread entry: create and run an asyncio event loop forever."""
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
+        self._queue = asyncio.Queue()
+        self.loop.create_task(self._worker())
         self.loop.run_forever()
 
     def stop(self):
@@ -44,37 +48,34 @@ class BleThread(QThread):
             self.loop.call_soon_threadsafe(self.loop.stop)
         self.wait()
 
+    async def _worker(self):
+        """Process operations from the queue one at a time."""
+        while True:
+            op_id, coro_func, args, kwargs = await self._queue.get()
+            try:
+                res = await coro_func(*args, **kwargs)
+                self.result.emit(op_id, res)
+            except Exception as e:
+                self.error.emit(op_id, f"{e}")
+                traceback.print_exc()
+            finally:
+                self._queue.task_done()
+
     # ── Submit work to the BLE thread ────────────────────────────────
 
     def submit(self, operation_id, coro_func, *args, **kwargs):
-        """Schedule an async operation on the BLE thread.
-
-        Args:
-            operation_id: String identifying this operation (for result routing).
-            coro_func: Async function to call.  Receives (printer, *args, **kwargs).
-                        For connection operations, receives (*args, **kwargs) only.
-        """
+        """Schedule an async operation on the BLE thread (serialised)."""
         if not self.loop or not self.loop.is_running():
             self.error.emit(operation_id, "BLE thread not running")
             return
-
-        asyncio.run_coroutine_threadsafe(
-            self._run_op(operation_id, coro_func, *args, **kwargs),
-            self.loop,
+        self.loop.call_soon_threadsafe(
+            self._queue.put_nowait,
+            (operation_id, coro_func, args, kwargs),
         )
-
-    async def _run_op(self, op_id, coro_func, *args, **kwargs):
-        try:
-            res = await coro_func(*args, **kwargs)
-            self.result.emit(op_id, res)
-        except Exception as e:
-            self.error.emit(op_id, f"{e}")
-            traceback.print_exc()
 
     # ── Connection management ────────────────────────────────────────
 
     def do_connect(self, model=None):
-        """Connect to a printer (dispatched to BLE thread)."""
         self._model_name = model
         self.submit("connect", self._connect, model)
 
@@ -121,7 +122,7 @@ class BleThread(QThread):
 
     async def _get_rfid(self):
         rfid = await self.printer.get_rfid()
-        if rfid:
+        if rfid and rfid.get("uuid"):
             from niim_tex import lookup_rfid_barcode, correct_rfid_count
             info = lookup_rfid_barcode(rfid["barcode"]) if rfid.get("barcode") else None
             rfid["_lookup"] = info
@@ -138,7 +139,6 @@ class BleThread(QThread):
         return hb
 
     def do_print(self, image, density=3, quantity=1, label_type=1):
-        """Print a PIL Image."""
         self.submit("print", self._print, image, density, quantity, label_type)
 
     async def _print(self, image, density, quantity, label_type):
@@ -151,7 +151,6 @@ class BleThread(QThread):
         return True
 
     def do_print_batch(self, images_and_settings):
-        """Print multiple images: [(image, density, quantity, label_type), ...]"""
         self.submit("print_batch", self._print_batch, images_and_settings)
 
     async def _print_batch(self, items):
@@ -229,8 +228,13 @@ class BleThread(QThread):
             try:
                 await asyncio.sleep(30)
                 if self.printer and self.printer.is_connected:
-                    hb = await self.printer.heartbeat()
-                    self.status_updated.emit(hb)
+                    # Queue heartbeat so it doesn't race with other operations
+                    future = asyncio.get_event_loop().create_future()
+                    async def _hb():
+                        hb = await self.printer.heartbeat()
+                        self.status_updated.emit(hb)
+                        return hb
+                    await self._queue.put(("heartbeat_auto", _hb, (), {}))
             except asyncio.CancelledError:
                 break
             except Exception:

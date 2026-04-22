@@ -222,7 +222,7 @@ class NiimbotPrinter:
         """Read the label roll's RFID tag. Returns dict or None if no tag."""
         _, data = await self._command(0x1A, b"\x01")
 
-        if len(data) < 1 or data[0] == 0:
+        if len(data) < 12 or data[0] == 0:
             return None
 
         uuid = data[0:8].hex()
