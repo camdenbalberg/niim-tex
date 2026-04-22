@@ -55,6 +55,7 @@ LABEL_SIZES = {
     "50x30":   (50, 30),
     "50x50":   (50, 50),
     "50x80":   (50, 80),
+    "50x170":  (50, 170),
 }
 
 # Cable label roll definition — maps the physical roll to its component regions

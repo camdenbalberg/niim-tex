@@ -1,0 +1,21 @@
+\documentclass[10pt]{article}
+\usepackage[paperwidth=30mm,paperheight=25mm,margin=0mm]{geometry}
+\usepackage{tikz}
+\pagestyle{empty}
+\topskip=0pt
+\parindent=0pt
+
+\begin{document}
+\noindent
+\begin{tikzpicture}[x=1mm,y=1mm]
+  \useasboundingbox (0,0) rectangle (30,25);
+  % Label: 25x30 (25mm tape x 30mm length, 25mm printable height)
+  % Canvas: (0,0) to (30,25)
+  % Print:  python niim_tex.py print templates/b1/25x30.tex
+  %
+  % --- Your content below ---
+
+  \node[anchor=center] at (15.0,12.5) {Hello};
+
+\end{tikzpicture}
+\end{document}

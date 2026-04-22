@@ -1,0 +1,21 @@
+\documentclass[10pt]{article}
+\usepackage[paperwidth=60mm,paperheight=40mm,margin=0mm]{geometry}
+\usepackage{tikz}
+\pagestyle{empty}
+\topskip=0pt
+\parindent=0pt
+
+\begin{document}
+\noindent
+\begin{tikzpicture}[x=1mm,y=1mm]
+  \useasboundingbox (0,0) rectangle (60,40);
+  % Label: 40x60 (40mm tape x 60mm length, 40mm printable height)
+  % Canvas: (0,0) to (60,40)
+  % Print:  python niim_tex.py print templates/b1/40x60.tex
+  %
+  % --- Your content below ---
+
+  \node[anchor=center] at (30.0,20.0) {Hello};
+
+\end{tikzpicture}
+\end{document}
