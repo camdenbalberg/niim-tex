@@ -94,19 +94,19 @@
   \node[white, font=\tiny\bfseries, anchor=south west] at (7,65) {4};
 
   % ── Text / branding area (bottom) ─────────────────────────────────
+  \node[white, anchor=center, font=\large\bfseries,
+        text width=36mm, align=center] at (25, 23) {PHOTO BOOTH};
+
+  % Decorative line
+  \draw[white, line width=0.6pt] (10,19.5) -- (40,19.5);
+
   \node[white, anchor=center, font=\normalsize\bfseries,
-        text width=36mm, align=center] at (25, 22) {PHOTO BOOTH};
+        text width=36mm, align=center] at (25, 15) {Your Event Name};
 
-  % Thin decorative line
-  \draw[white, line width=0.3pt] (10,19) -- (40,19);
+  \node[white, anchor=center, font=\small\bfseries,
+        text width=36mm, align=center] at (25, 9.5) {\#YourHashtag};
 
-  \node[white, anchor=center, font=\scriptsize,
-        text width=36mm, align=center] at (25, 15.5) {Your Event Name};
-
-  \node[white!70!black, anchor=center, font=\tiny,
-        text width=36mm, align=center] at (25, 11) {\#YourHashtag};
-
-  \node[white!50!black, anchor=center, font=\tiny] at (25, 7) {04.22.2026};
+  \node[white, anchor=center, font=\small\bfseries] at (25, 5) {04.22.2026};
 
 \end{tikzpicture}
 \end{document}
