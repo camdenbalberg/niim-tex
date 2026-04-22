@@ -7,10 +7,11 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, QPushButton,
     QComboBox, QSlider, QDoubleSpinBox, QSpinBox, QCheckBox, QFileDialog,
     QListWidget, QListWidgetItem, QRadioButton, QButtonGroup, QMessageBox,
-    QScrollArea, QSplitter, QApplication,
+    QScrollArea, QSplitter, QApplication, QGraphicsView, QGraphicsScene,
+    QGraphicsPixmapItem,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
-from PyQt6.QtGui import QImage, QPixmap
+from PyQt6.QtGui import QImage, QPixmap, QWheelEvent, QKeySequence, QShortcut
 
 from PIL import Image
 
@@ -40,6 +41,70 @@ def pil_to_qpixmap(pil_image):
                       pil_image.width * 3, QImage.Format.Format_RGB888)
 
     return QPixmap.fromImage(qimg)
+
+
+class ZoomablePreview(QGraphicsView):
+    """Image preview widget with auto-fit and manual zoom (Ctrl+scroll, Ctrl+/-)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._scene = QGraphicsScene(self)
+        self.setScene(self._scene)
+        self._pixmap_item = None
+        self._auto_fit = True  # auto-zoom to fit on new images
+        self._zoom = 1.0
+
+        self.setStyleSheet("background-color: #ecf0f1; border: 1px solid #bdc3c7;")
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+
+        # Keyboard zoom shortcuts
+        QShortcut(QKeySequence("Ctrl+="), self, lambda: self._zoom_by(1.25))
+        QShortcut(QKeySequence("Ctrl+-"), self, lambda: self._zoom_by(0.8))
+        QShortcut(QKeySequence("Ctrl+0"), self, self.fit_to_view)
+
+    def set_pixmap(self, pixmap):
+        """Set a new image and auto-fit if enabled."""
+        self._scene.clear()
+        if pixmap and not pixmap.isNull():
+            self._pixmap_item = self._scene.addPixmap(pixmap)
+            self._scene.setSceneRect(pixmap.rect().toRectF())
+            if self._auto_fit:
+                self.fit_to_view()
+        else:
+            self._pixmap_item = None
+
+    def fit_to_view(self):
+        """Zoom to fit the image in the viewport."""
+        if self._pixmap_item:
+            self.fitInView(self._pixmap_item, Qt.AspectRatioMode.KeepAspectRatio)
+            self._zoom = self.transform().m11()
+            self._auto_fit = True
+
+    def _zoom_by(self, factor):
+        """Apply a relative zoom factor."""
+        self._auto_fit = False
+        self._zoom *= factor
+        self._zoom = max(0.1, min(self._zoom, 20.0))
+        self.resetTransform()
+        self.scale(self._zoom, self._zoom)
+
+    def wheelEvent(self, event: QWheelEvent):
+        """Ctrl+scroll to zoom, plain scroll to pan."""
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            delta = event.angleDelta().y()
+            factor = 1.15 if delta > 0 else 1 / 1.15
+            self._zoom_by(factor)
+            event.accept()
+        else:
+            super().wheelEvent(event)
+
+    def resizeEvent(self, event):
+        """Re-fit on resize if auto-fit is active."""
+        super().resizeEvent(event)
+        if self._auto_fit and self._pixmap_item:
+            self.fit_to_view()
 
 
 class PreviewWorker(QThread):
@@ -223,18 +288,21 @@ class PrintPanel(QWidget):
         # ── Right: Preview ───────────────────────────────────────────
         right = QWidget()
         right_layout = QVBoxLayout(right)
-        right_layout.addWidget(QLabel("Print Preview"))
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_label = QLabel("Select an image to preview")
-        self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_label.setStyleSheet("background-color: #ecf0f1; border: 1px solid #bdc3c7;")
-        scroll.setWidget(self.preview_label)
-        right_layout.addWidget(scroll, 1)
+        preview_header = QHBoxLayout()
+        preview_header.addWidget(QLabel("Print Preview"))
+        preview_header.addStretch()
+        self.zoom_fit_btn = QPushButton("Fit")
+        self.zoom_fit_btn.setFixedWidth(40)
+        self.zoom_fit_btn.setToolTip("Zoom to fit (Ctrl+0)")
+        preview_header.addWidget(self.zoom_fit_btn)
+        right_layout.addLayout(preview_header)
 
-        self.info_label = QLabel("")
+        self.preview_view = ZoomablePreview()
+        self.zoom_fit_btn.clicked.connect(self.preview_view.fit_to_view)
+        right_layout.addWidget(self.preview_view, 1)
+
+        self.info_label = QLabel("Ctrl+Scroll to zoom, Ctrl+0 to fit")
         self.info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.info_label.setStyleSheet("color: #7f8c8d;")
         right_layout.addWidget(self.info_label)
@@ -341,13 +409,7 @@ class PrintPanel(QWidget):
 
     def _on_preview_done(self, pixmap, info):
         if pixmap:
-            # Scale to fit the preview area
-            scaled = pixmap.scaled(
-                self.preview_label.size(),
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation)
-            self.preview_label.setPixmap(scaled)
-            self.preview_label.setText("")
+            self.preview_view.set_pixmap(pixmap)
         self.info_label.setText(info)
 
     # ── Printing ─────────────────────────────────────────────────────
