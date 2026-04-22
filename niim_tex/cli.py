@@ -164,11 +164,18 @@ def parse_geometry_from_tex(tex_path):
 
 def find_label_size_for_geometry(pw, ph):
     """Given geometry (paperwidth, paperheight), find the matching label size.
-    Templates are landscape: pw=label_length, ph=tape_width."""
+    Handles both landscape templates (pw=long, ph=short) and portrait (pw=short, ph=long)."""
     for name, (tape_w, label_l) in LABEL_SIZES.items():
-        if math.isclose(pw, label_l, abs_tol=0.5) and math.isclose(ph, tape_w, abs_tol=0.5):
+        printable = min(tape_w, 12) if tape_w <= 15 else min(tape_w, 50)
+        long_axis = max(label_l, printable)
+        short_axis = min(label_l, printable)
+        # Landscape: pw=long, ph=short
+        if math.isclose(pw, long_axis, abs_tol=0.5) and math.isclose(ph, short_axis, abs_tol=0.5):
             return name, tape_w, label_l
-    return None, ph, pw  # unknown size, return as-is (ph=tape_w, pw=label_l)
+        # Portrait: pw=short, ph=long
+        if math.isclose(pw, short_axis, abs_tol=0.5) and math.isclose(ph, long_axis, abs_tol=0.5):
+            return name, tape_w, label_l
+    return None, ph, pw  # unknown size, return as-is
 
 
 def compile_tex_to_png(tex_path, build_dir=None, dpi=DPI, rotate=90):
@@ -402,12 +409,17 @@ def run_print(tex_path, density=3, rotate=0, quantity=1, label_type=1, model=Non
     if pw and ph:
         size_name, tape_w, label_l = find_label_size_for_geometry(pw, ph)
 
-    # D-series (tape < label): rotate 90° to convert landscape template to portrait
-    # B-series (tape >= label): template is already landscape, no rotation needed
+    # Determine rotation:
+    # - Portrait templates (pw < ph): user designed in physical orientation, no rotation
+    # - Landscape B-series (tape >= label): already landscape for printer, no rotation
+    # - Landscape D-series (tape < label): rotate 90° to convert to portrait
     compile_rotate = 90
-    printer_printable = getattr(printer, 'PRINTABLE_HEIGHT_MM', 12)
-    if label_l and printer_printable >= label_l:
-        compile_rotate = 0
+    if pw and ph and pw < ph:
+        compile_rotate = 0  # Portrait template — already in physical orientation
+    else:
+        printer_printable = getattr(printer, 'PRINTABLE_HEIGHT_MM', 12)
+        if label_l and printer_printable >= label_l:
+            compile_rotate = 0
 
     # Use compile_tex_to_png helper
     png_path, build_dir = compile_tex_to_png(tex_path, dpi=compile_dpi, rotate=compile_rotate)

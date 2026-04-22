@@ -1,0 +1,84 @@
+% Photo booth strip template for NIIMBOT B1 Pro (50x170mm label)
+%
+% This is a PORTRAIT template — design it exactly as the physical strip
+% will look when held upright. No rotation is applied during compilation.
+%
+% Usage:
+%   1. Replace photo1.jpg through photo4.jpg with your own images
+%   2. Edit the text at the bottom
+%   3. Print:  niim-tex --model b1 print examples/photobooth_50x170.tex
+%
+% The \coverphoto macro automatically scales and center-crops each image
+% to fill its frame — works with any aspect ratio (portrait, landscape, square).
+
+\documentclass[10pt]{article}
+\usepackage[paperwidth=50mm,paperheight=170mm,margin=0mm]{geometry}
+\usepackage{tikz}
+\usepackage{graphicx}
+\pagestyle{empty}
+\topskip=0pt
+\parindent=0pt
+
+% ── Cover-crop macro ─────────────────────────────────────────────────
+% \coverphoto{x}{y}{width}{height}{image-path}
+%
+% Scales the image to FILL the frame (like CSS object-fit:cover), then
+% clips the overflow. Automatically chooses width or height scaling
+% based on the image's aspect ratio vs the frame's aspect ratio.
+\newlength{\coverW}
+\newlength{\coverH}
+\newcommand{\coverphoto}[5]{%
+  \begin{scope}
+    \clip (#1,#2) rectangle ++(#3,#4);%
+    % Measure image width when scaled to fill frame height
+    \settowidth{\coverW}{\includegraphics[height=#4mm]{#5}}%
+    \ifdim\coverW<#3mm
+      % Image too narrow at frame height → scale by width instead
+      \node[inner sep=0pt] at ({#1+#3/2},{#2+#4/2})
+        {\includegraphics[width=#3mm]{#5}};%
+    \else
+      % Image fills or exceeds frame width → scale by height
+      \node[inner sep=0pt] at ({#1+#3/2},{#2+#4/2})
+        {\includegraphics[height=#4mm]{#5}};%
+    \fi
+  \end{scope}
+}
+
+\begin{document}
+\noindent
+\begin{tikzpicture}[x=1mm,y=1mm]
+  \useasboundingbox (0,0) rectangle (50,170);
+  % Label: 50x170 (50mm tape x 170mm length)
+  % Canvas: (0,0)=bottom-left to (50,170)=top-right
+  % Design this exactly as the physical strip will look when held upright.
+
+  % ── Background (optional) ──────────────────────────────────────────
+  % Uncomment for a light border around the entire strip:
+  % \draw[gray, line width=0.3pt] (0.5,0.5) rectangle (49.5,169.5);
+
+  % ── Photo frames ──────────────────────────────────────────────────
+  % 4 photos stacked top to bottom, 46mm wide x 34mm tall each
+  % 2mm margins on sides, 3mm top margin, 2mm gaps between photos
+
+  % Photo 1 (top)
+  \coverphoto{2}{131}{46}{34}{photo1.jpg}
+  % \draw[white, line width=0.5pt] (2,131) rectangle ++(46,34);
+
+  % Photo 2
+  \coverphoto{2}{95}{46}{34}{photo2.jpg}
+
+  % Photo 3
+  \coverphoto{2}{59}{46}{34}{photo3.jpg}
+
+  % Photo 4 (bottom photo)
+  \coverphoto{2}{23}{46}{34}{photo4.jpg}
+
+  % ── Text / branding area (bottom 20mm) ─────────────────────────────
+  % Customize these with your event name, date, hashtag, etc.
+
+  \node[anchor=center, font=\large\bfseries] at (25, 14) {PHOTO BOOTH};
+  \node[anchor=center, font=\small] at (25, 9) {Your Event Name};
+  \node[anchor=center, font=\scriptsize, gray] at (25, 5) {04/22/2026};
+
+\end{tikzpicture}
+\end{document}
