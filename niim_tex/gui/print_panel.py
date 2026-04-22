@@ -359,14 +359,23 @@ class PrintPanel(QWidget):
         preview_header = QHBoxLayout()
         preview_header.addWidget(QLabel("Print Preview"))
         preview_header.addStretch()
-        self.zoom_fit_btn = QPushButton("Fit")
-        self.zoom_fit_btn.setFixedWidth(40)
-        self.zoom_fit_btn.setToolTip("Zoom to fit (Ctrl+0)")
-        preview_header.addWidget(self.zoom_fit_btn)
+
+        # Display rendering controls
+        self.render_combo = QComboBox()
+        self.render_combo.addItems(["Nearest", "Smooth"])
+        self.render_combo.setToolTip("Pixel rendering mode")
+        self.render_combo.currentIndexChanged.connect(self._on_render_changed)
+        preview_header.addWidget(self.render_combo)
+
+        self.zoom_combo = QComboBox()
+        self.zoom_combo.addItems(["Fit", "25%", "50%", "75%", "100%", "150%", "200%"])
+        self.zoom_combo.setToolTip("Default zoom level")
+        self.zoom_combo.currentIndexChanged.connect(self._on_zoom_preset)
+        preview_header.addWidget(self.zoom_combo)
+
         right_layout.addLayout(preview_header)
 
         self.preview_view = ZoomablePreview()
-        self.zoom_fit_btn.clicked.connect(self.preview_view.fit_to_view)
         right_layout.addWidget(self.preview_view, 1)
 
         self.info_label = QLabel("Ctrl+Scroll to zoom, Ctrl+0 to fit")
@@ -478,6 +487,23 @@ class PrintPanel(QWidget):
             brightness, contrast, sharpness, self)
         self._preview_worker.finished.connect(self._on_preview_done)
         self._preview_worker.start()
+
+    def _on_render_changed(self, idx):
+        smooth = idx == 1  # 0=Nearest, 1=Smooth
+        self.preview_view.setRenderHint(
+            QPainter.RenderHint.SmoothPixmapTransform, smooth)
+        self.preview_view.viewport().update()
+
+    def _on_zoom_preset(self, idx):
+        text = self.zoom_combo.currentText()
+        if text == "Fit":
+            self.preview_view.fit_to_view()
+        else:
+            pct = int(text.replace("%", "")) / 100.0
+            self.preview_view._auto_fit = False
+            self.preview_view._zoom = pct
+            self.preview_view.resetTransform()
+            self.preview_view.scale(pct, pct)
 
     def _on_preview_done(self, pixmap, info):
         if pixmap:
