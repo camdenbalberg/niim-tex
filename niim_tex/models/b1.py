@@ -20,7 +20,7 @@ class B1Printer(NiimbotPrinter):
     - setDimension uses 4 bytes (height, width) instead of 13
     - setQuantity is a separate command (not embedded in setPageSize)
     - Image rows use zero counts in the 6-byte header (same struct as D110)
-    - All BLE writes use write-with-response (not write-without-response)
+    - Commands use write-with-response; image data uses write-without-response
     - No one-way heartbeat workaround needed after endPrint
     """
 
@@ -74,6 +74,17 @@ class B1Printer(NiimbotPrinter):
         if img.width > self.MAX_WIDTH_PX:
             raise ValueError(f"Image too wide: {img.width}px > {self.MAX_WIDTH_PX}px")
 
+        # Pre-encode all row packets for fast transmission
+        row_width_bytes = math.ceil(img.width / 8)
+        packets = []
+        for y in range(img.height):
+            bits = "".join(
+                "0" if img.getpixel((x, y)) == 0 else "1"
+                for x in range(img.width))
+            row_bytes = int(bits, 2).to_bytes(row_width_bytes, "big")
+            header = struct.pack(">H3BB", y, 0, 0, 0, 1)
+            packets.append(build_packet(0x85, header + row_bytes))
+
         # Fresh event to avoid cross-loop issues from multiple asyncio.run() calls
         self._notify_event = asyncio.Event()
 
@@ -89,28 +100,21 @@ class B1Printer(NiimbotPrinter):
             await self._b1_cmd(0x13, struct.pack(">HH", img.height, img.width))
             await self._b1_cmd(0x15, struct.pack(">H", quantity))          # setQuantity
 
-            # 2. Send image rows — write-with-response, 6-byte header
-            for y in range(img.height):
-                bits = "".join(
-                    "0" if img.getpixel((x, y)) == 0 else "1"
-                    for x in range(img.width))
-                row_bytes = int(bits, 2).to_bytes(
-                    math.ceil(img.width / 8), "big")
-                # 6-byte header: row index (2B) + 3 zero counts (3B) + flag (1B)
-                header = struct.pack(">H3BB", y, 0, 0, 0, 1)
-                await self.client.write_gatt_char(
-                    self.char_uuid, build_packet(0x85, header + row_bytes))
-                await asyncio.sleep(0.01)
+            # 2. Send image rows — write-with-response, no artificial delay.
+            #    The BLE ACK naturally paces each row. response=False crashes
+            #    the B1's BLE connection; response=True (default) is required.
+            for pkt in packets:
+                await self.client.write_gatt_char(self.char_uuid, pkt)
 
-            # 3. endPage — loop until acknowledged
-            for _ in range(50):
+            # 3. endPage — loop until acknowledged (longer timeout for big labels)
+            for _ in range(200):
                 _, data = await self._b1_cmd(0xE3, b"\x01")
                 if data[0]:
                     break
-                await asyncio.sleep(0.05)
+                await asyncio.sleep(0.1)
 
             # 4. Poll status until all copies done
-            for _ in range(100):
+            for _ in range(300):
                 _, data = await self._b1_cmd(0xA3, b"\x01")
                 if len(data) >= 2:
                     page = struct.unpack(">H", data[:2])[0]
