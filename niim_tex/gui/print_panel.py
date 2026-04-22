@@ -58,8 +58,8 @@ class ZoomablePreview(QGraphicsView):
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
-        # Smooth scaling for grayscale preview
-        self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        # Nearest-neighbor — WYSIWYG, matches the saved file exactly
+        self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
 
         # Keyboard zoom shortcuts
         QShortcut(QKeySequence("Ctrl+="), self, lambda: self._zoom_by(1.25))
@@ -134,15 +134,12 @@ class PreviewWorker(QThread):
 
     def run(self):
         try:
-            # Full processing pipeline (resize, gamma, dither/threshold)
+            # Full pipeline — exact same output as print/save
             label = _prepare_label_image(
                 self.image, self.target_w, self.target_h,
                 self.dither, self.threshold, 0,
                 self.no_stretch, self.align, self.gamma, self.crop)
-            # Convert 1-bit back to grayscale for display — smooth scaling
-            # blends the dither dots into the tones they represent, so the
-            # preview looks like what the print looks like to the human eye
-            # while still reflecting dither/threshold/gamma settings.
+            # Convert to grayscale for QPixmap, keep pixel data identical
             preview = label.convert("L")
             pixmap = pil_to_qpixmap(preview)
             info = f"{label.width}x{label.height}px"
