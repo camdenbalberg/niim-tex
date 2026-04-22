@@ -1,5 +1,6 @@
 """Main GUI application window for niim-tex."""
 
+import os
 import sys
 
 from PyQt6.QtWidgets import (
@@ -49,6 +50,12 @@ class MainWindow(QMainWindow):
         self.ble.disconnected.connect(self._on_disconnected)
         self.ble.status_updated.connect(self._on_status)
         self.ble.print_progress.connect(self._on_print_progress)
+
+        # Load default file if it exists
+        default = r"C:\Users\Camden\Documents\Coding Projects\LaTeX to NIIMBOT D110 print\my labels\ski trip photobooth.pdf"
+        if os.path.isfile(default):
+            self.tabs.setCurrentWidget(self.print_panel)
+            self.print_panel.load_files([default])
 
     def _build_status_bar(self):
         status = QStatusBar()

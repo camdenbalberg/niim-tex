@@ -426,9 +426,11 @@ class PrintPanel(QWidget):
             "*.webp *.avif *.heif *.heic *.pdf *.tex);;"
             "All Files (*)",
         )
-        if not paths:
-            return
+        if paths:
+            self.load_files(paths)
 
+    def load_files(self, paths):
+        """Load image/PDF/tex files into the file list."""
         printer_dpi = getattr(self.ble.printer, 'DPI', DPI) if self.ble.printer else 300
         for p in paths:
             try:
