@@ -1,12 +1,13 @@
 % Photo booth strip template for NIIMBOT B1 Pro (50x170mm label)
+% Film-strip style with rounded frames, perforations, and decorative elements.
 %
 % This is a PORTRAIT template — design it exactly as the physical strip
 % will look when held upright. No rotation is applied during compilation.
 %
 % Usage:
 %   1. Replace photo1.jpg through photo4.jpg with your own images
-%   2. Edit the text at the bottom
-%   3. Print:  niim-tex --model b1 print examples/photobooth_50x170.tex
+%   2. Edit the event name, date, and hashtag at the bottom
+%   3. Print:  niim-tex --model b1 print photobooth.tex
 %
 % The \coverphoto macro automatically scales and center-crops each image
 % to fill its frame — works with any aspect ratio (portrait, landscape, square).
@@ -15,6 +16,7 @@
 \usepackage[paperwidth=50mm,paperheight=170mm,margin=0mm]{geometry}
 \usepackage{tikz}
 \usepackage{graphicx}
+\usetikzlibrary{calc}
 \pagestyle{empty}
 \topskip=0pt
 \parindent=0pt
@@ -29,56 +31,82 @@
 \newlength{\coverH}
 \newcommand{\coverphoto}[5]{%
   \begin{scope}
-    \clip (#1,#2) rectangle ++(#3,#4);%
-    % Measure image width when scaled to fill frame height
+    \clip[rounded corners=2mm] (#1,#2) rectangle ++(#3,#4);%
     \settowidth{\coverW}{\includegraphics[height=#4mm]{#5}}%
     \ifdim\coverW<#3mm
-      % Image too narrow at frame height → scale by width instead
       \node[inner sep=0pt] at ({#1+#3/2},{#2+#4/2})
         {\includegraphics[width=#3mm]{#5}};%
     \else
-      % Image fills or exceeds frame width → scale by height
       \node[inner sep=0pt] at ({#1+#3/2},{#2+#4/2})
         {\includegraphics[height=#4mm]{#5}};%
     \fi
   \end{scope}
 }
 
+% ── Film perforation macro ───────────────────────────────────────────
+% Draws a column of rounded rectangles along one edge (like 35mm film)
+\newcommand{\perforations}[1]{% #1 = x position of perforation center
+  \foreach \py in {4,10,16,...,166} {
+    \fill[black] ({#1-1.2},\py) rectangle ++(2.4,3.5);
+    \fill[white, rounded corners=0.4mm] ({#1-0.8},{\py+0.3}) rectangle ++(1.6,2.9);
+  }
+}
+
 \begin{document}
 \noindent
 \begin{tikzpicture}[x=1mm,y=1mm]
   \useasboundingbox (0,0) rectangle (50,170);
-  % Label: 50x170 (50mm tape x 170mm length)
-  % Canvas: (0,0)=bottom-left to (50,170)=top-right
-  % Design this exactly as the physical strip will look when held upright.
 
-  % ── Background (optional) ──────────────────────────────────────────
-  % Uncomment for a light border around the entire strip:
-  % \draw[gray, line width=0.3pt] (0.5,0.5) rectangle (49.5,169.5);
+  % ── Black film strip background ────────────────────────────────────
+  \fill[black] (0,0) rectangle (50,170);
+
+  % ── Film perforations along both edges ─────────────────────────────
+  \perforations{3}
+  \perforations{47}
 
   % ── Photo frames ──────────────────────────────────────────────────
-  % 4 photos stacked top to bottom, 46mm wide x 34mm tall each
-  % 2mm margins on sides, 3mm top margin, 2mm gaps between photos
+  % 4 photos stacked top to bottom, 36mm wide x 30mm tall each
+  % Centered between the perforation columns
 
   % Photo 1 (top)
-  \coverphoto{2}{131}{46}{34}{photo1.jpg}
-  % \draw[white, line width=0.5pt] (2,131) rectangle ++(46,34);
+  \coverphoto{7}{133}{36}{30}{photo1.jpg}
 
   % Photo 2
-  \coverphoto{2}{95}{46}{34}{photo2.jpg}
+  \coverphoto{7}{100}{36}{30}{photo2.jpg}
 
   % Photo 3
-  \coverphoto{2}{59}{46}{34}{photo3.jpg}
+  \coverphoto{7}{67}{36}{30}{photo3.jpg}
 
-  % Photo 4 (bottom photo)
-  \coverphoto{2}{23}{46}{34}{photo4.jpg}
+  % Photo 4
+  \coverphoto{7}{34}{36}{30}{photo4.jpg}
 
-  % ── Text / branding area (bottom 20mm) ─────────────────────────────
-  % Customize these with your event name, date, hashtag, etc.
+  % ── Decorative stars between photos ────────────────────────────────
+  \foreach \sy in {131.5, 98.5, 65.5} {
+    \node[white, font=\tiny] at (15,\sy) {$\star$};
+    \node[white, font=\tiny] at (25,\sy) {$\star$};
+    \node[white, font=\tiny] at (35,\sy) {$\star$};
+  }
 
-  \node[anchor=center, font=\large\bfseries] at (25, 14) {PHOTO BOOTH};
-  \node[anchor=center, font=\small] at (25, 9) {Your Event Name};
-  \node[anchor=center, font=\scriptsize, gray] at (25, 5) {04/22/2026};
+  % ── Frame counter (film style) ────────────────────────────────────
+  \node[white, font=\tiny\bfseries, anchor=south west] at (7,164) {1};
+  \node[white, font=\tiny\bfseries, anchor=south west] at (7,131) {2};
+  \node[white, font=\tiny\bfseries, anchor=south west] at (7,98) {3};
+  \node[white, font=\tiny\bfseries, anchor=south west] at (7,65) {4};
+
+  % ── Text / branding area (bottom) ─────────────────────────────────
+  \node[white, anchor=center, font=\normalsize\bfseries,
+        text width=36mm, align=center] at (25, 22) {PHOTO BOOTH};
+
+  % Thin decorative line
+  \draw[white, line width=0.3pt] (10,19) -- (40,19);
+
+  \node[white, anchor=center, font=\scriptsize,
+        text width=36mm, align=center] at (25, 15.5) {Your Event Name};
+
+  \node[white!70!black, anchor=center, font=\tiny,
+        text width=36mm, align=center] at (25, 11) {\#YourHashtag};
+
+  \node[white!50!black, anchor=center, font=\tiny] at (25, 7) {04.22.2026};
 
 \end{tikzpicture}
 \end{document}
