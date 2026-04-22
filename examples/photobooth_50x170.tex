@@ -94,19 +94,21 @@
   \node[white, font=\tiny\bfseries, anchor=south west] at (7,65) {4};
 
   % ── Text / branding area (bottom) ─────────────────────────────────
-  \node[white, anchor=center, font=\large\bfseries,
-        text width=36mm, align=center] at (25, 23) {PHOTO BOOTH};
+  % resizebox forces text to fit the width — never wraps to a new line.
+  \node[white, anchor=center, inner sep=0pt] at (25, 23)
+    {\resizebox{36mm}{!}{\bfseries PHOTO BOOTH}};
 
   % Decorative line
   \draw[white, line width=0.6pt] (10,19.5) -- (40,19.5);
 
-  \node[white, anchor=center, font=\normalsize\bfseries,
-        text width=36mm, align=center] at (25, 15) {Your Event Name};
+  \node[white, anchor=center, inner sep=0pt] at (25, 15)
+    {\resizebox{36mm}{!}{\bfseries Your Event Name}};
 
-  \node[white, anchor=center, font=\small\bfseries,
-        text width=36mm, align=center] at (25, 9.5) {\#YourHashtag};
+  \node[white, anchor=center, inner sep=0pt] at (25, 9.5)
+    {\resizebox{36mm}{!}{\bfseries \#YourHashtag}};
 
-  \node[white, anchor=center, font=\small\bfseries] at (25, 5) {04.22.2026};
+  \node[white, anchor=center, inner sep=0pt] at (25, 5)
+    {\resizebox{36mm}{!}{\bfseries 04.22.2026}};
 
 \end{tikzpicture}
 \end{document}
