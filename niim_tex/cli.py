@@ -739,18 +739,15 @@ async def _print_images_async(images, printer, roll, density, rotate, quantity,
                                          rotate, no_stretch, align, gamma, crop)
 
             if save:
-                # Save B&W image upscaled 3x with nearest-neighbor (preserves
-                # crisp dither dots) so the NIIM app sees it as full-size.
-                SCALE = 3
-                upscaled = label.resize(
-                    (label.width * SCALE, label.height * SCALE),
-                    Image.NEAREST)
+                # Save at native printer resolution — the NIIM app preview may
+                # show it small, but it prints pixel-perfect since the dimensions
+                # exactly match what the printer renders. Upscaling causes blur
+                # because the app downscales with smooth interpolation.
                 src_dir = os.path.dirname(os.path.abspath(source_path)) if source_path else os.getcwd()
                 base = os.path.splitext(filename)[0]
                 out_path = os.path.join(src_dir, f"{base}_print.png")
-                save_dpi = printer_dpi * SCALE
-                upscaled.save(out_path, dpi=(save_dpi, save_dpi))
-                print(f"Saved: {out_path} ({upscaled.width}x{upscaled.height}px @ {save_dpi} DPI)")
+                label.save(out_path, dpi=(printer_dpi, printer_dpi))
+                print(f"Saved: {out_path} ({label.width}x{label.height}px @ {printer_dpi} DPI)")
                 continue
 
             if preview:
