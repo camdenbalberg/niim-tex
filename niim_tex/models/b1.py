@@ -74,14 +74,14 @@ class B1Printer(NiimbotPrinter):
         if img.width > self.MAX_WIDTH_PX:
             raise ValueError(f"Image too wide: {img.width}px > {self.MAX_WIDTH_PX}px")
 
-        # Pre-encode all row packets for fast transmission
+        # Pre-encode all row packets using PIL's native bit packing (fast).
+        # tobytes("raw", "1") packs mode-1 pixels as MSB-first bits — exactly
+        # the format the printer expects (1=heat, 0=no heat).
         row_width_bytes = math.ceil(img.width / 8)
+        packed = img.tobytes("raw", "1")
         packets = []
         for y in range(img.height):
-            bits = "".join(
-                "0" if img.getpixel((x, y)) == 0 else "1"
-                for x in range(img.width))
-            row_bytes = int(bits, 2).to_bytes(row_width_bytes, "big")
+            row_bytes = packed[y * row_width_bytes : (y + 1) * row_width_bytes]
             header = struct.pack(">H3BB", y, 0, 0, 0, 1)
             packets.append(build_packet(0x85, header + row_bytes))
 
@@ -106,21 +106,32 @@ class B1Printer(NiimbotPrinter):
             for pkt in packets:
                 await self.client.write_gatt_char(self.char_uuid, pkt)
 
-            # 3. endPage — loop until acknowledged (longer timeout for big labels)
-            for _ in range(200):
-                _, data = await self._b1_cmd(0xE3, b"\x01")
-                if data[0]:
-                    break
-                await asyncio.sleep(0.1)
+            # Wait for the printer to finish rendering all buffered rows.
+            # Long labels (170mm = 2008 rows) need significant processing time.
+            wait_secs = max(1.0, img.height / 500)
+            await asyncio.sleep(wait_secs)
+
+            # 3. endPage — loop until acknowledged
+            for _ in range(300):
+                try:
+                    _, data = await self._b1_cmd(0xE3, b"\x01")
+                    if data[0]:
+                        break
+                except Exception:
+                    pass
+                await asyncio.sleep(0.2)
 
             # 4. Poll status until all copies done
-            for _ in range(300):
-                _, data = await self._b1_cmd(0xA3, b"\x01")
-                if len(data) >= 2:
-                    page = struct.unpack(">H", data[:2])[0]
-                    if page >= quantity:
-                        break
-                await asyncio.sleep(0.1)
+            for _ in range(600):
+                try:
+                    _, data = await self._b1_cmd(0xA3, b"\x01")
+                    if len(data) >= 2:
+                        page = struct.unpack(">H", data[:2])[0]
+                        if page >= quantity:
+                            break
+                except Exception:
+                    pass
+                await asyncio.sleep(0.2)
 
             # 5. endPrint
             await self._b1_cmd(0xF3, b"\x01")
