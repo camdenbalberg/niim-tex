@@ -18,7 +18,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("niim-tex")
-        self.setMinimumSize(850, 650)
+        self.setMinimumSize(600, 400)
+        self.resize(900, 650)
 
         # Load saved geometry
         self.settings = QSettings("niim-tex", "niim-tex-gui")

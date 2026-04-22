@@ -91,9 +91,14 @@ class PrintPanel(QWidget):
         layout = QHBoxLayout(self)
         layout.addWidget(splitter)
 
-        # ── Left: Files + Settings ───────────────────────────────────
+        # ── Left: Files + Settings (scrollable) ──────────────────────
+        left_scroll = QScrollArea()
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        left_scroll.setMinimumWidth(320)
         left = QWidget()
         left_layout = QVBoxLayout(left)
+        left_scroll.setWidget(left)
 
         # File picker
         file_group = QGroupBox("Files")
@@ -213,7 +218,7 @@ class PrintPanel(QWidget):
         self.print_btn.clicked.connect(self._on_print)
         left_layout.addWidget(self.print_btn)
 
-        splitter.addWidget(left)
+        splitter.addWidget(left_scroll)
 
         # ── Right: Preview ───────────────────────────────────────────
         right = QWidget()

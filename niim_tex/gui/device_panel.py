@@ -3,7 +3,7 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, QPushButton,
     QComboBox, QSlider, QCheckBox, QSpinBox, QFormLayout, QProgressBar,
-    QMessageBox,
+    QMessageBox, QScrollArea,
 )
 from PyQt6.QtCore import Qt
 
@@ -19,7 +19,17 @@ class DevicePanel(QWidget):
         self._connect_signals()
 
     def _build_ui(self):
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        outer.addWidget(scroll)
+
+        container = QWidget()
+        scroll.setWidget(container)
+        layout = QVBoxLayout(container)
         layout.setSpacing(12)
 
         # ── Connection ───────────────────────────────────────────────
