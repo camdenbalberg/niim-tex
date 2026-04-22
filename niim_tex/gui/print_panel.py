@@ -253,7 +253,7 @@ class PrintPanel(QWidget):
         self.gamma_spin = QDoubleSpinBox()
         self.gamma_spin.setRange(0.01, 10.0)
         self.gamma_spin.setSingleStep(0.05)
-        self.gamma_spin.setValue(0.25)
+        self.gamma_spin.setValue(0.55)
         self.gamma_spin.valueChanged.connect(self._schedule_preview)
         gamma_row.addWidget(self.gamma_spin)
         gamma_row.addStretch()
