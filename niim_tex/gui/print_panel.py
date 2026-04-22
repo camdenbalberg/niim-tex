@@ -271,7 +271,9 @@ class PrintPanel(QWidget):
 
         left_layout.addWidget(settings_group)
 
-        # Print button
+        # Print + Save buttons
+        btn_row = QHBoxLayout()
+
         self.print_btn = QPushButton("Print")
         self.print_btn.setMinimumHeight(40)
         self.print_btn.setStyleSheet(
@@ -281,7 +283,19 @@ class PrintPanel(QWidget):
             "QPushButton:disabled { background-color: #95a5a6; }"
         )
         self.print_btn.clicked.connect(self._on_print)
-        left_layout.addWidget(self.print_btn)
+        btn_row.addWidget(self.print_btn)
+
+        self.save_btn = QPushButton("Save")
+        self.save_btn.setMinimumHeight(40)
+        self.save_btn.setStyleSheet(
+            "QPushButton { background-color: #2980b9; color: white; "
+            "font-size: 14px; font-weight: bold; border-radius: 6px; }"
+            "QPushButton:hover { background-color: #3498db; }"
+        )
+        self.save_btn.clicked.connect(self._on_save)
+        btn_row.addWidget(self.save_btn)
+
+        left_layout.addLayout(btn_row)
 
         splitter.addWidget(left_scroll)
 
@@ -448,6 +462,55 @@ class PrintPanel(QWidget):
         self.print_btn.setEnabled(False)
         self.print_btn.setText("Printing...")
         self.ble.do_print_batch(items)
+
+    def _on_save(self):
+        if not self._images:
+            QMessageBox.warning(self, "No Images", "Add images to save first.")
+            return
+
+        target_w, target_h = self._get_target_dims()
+        if not target_w:
+            QMessageBox.warning(self, "No Roll", "Select a roll size.")
+            return
+
+        mode_id = self.mode_group.checkedId()
+        no_stretch = mode_id == 1
+        crop = mode_id == 2
+        align = self.align_combo.currentText()
+        gamma = self.gamma_spin.value()
+        dither = self.dither_cb.isChecked()
+        threshold = self.threshold_spin.value()
+        printer_dpi = getattr(self.ble.printer, 'DPI', 300) if self.ble.printer else 300
+
+        if len(self._images) == 1:
+            # Single file — save-as dialog
+            name, img = self._images[0]
+            base = os.path.splitext(name)[0]
+            path, _ = QFileDialog.getSaveFileName(
+                self, "Save Print Image", f"{base}_print.png",
+                "PNG (*.png);;All Files (*)")
+            if not path:
+                return
+            label = _prepare_label_image(
+                img, target_w, target_h, dither, threshold, 0,
+                no_stretch, align, gamma, crop)
+            label.save(path, dpi=(printer_dpi, printer_dpi))
+            QMessageBox.information(self, "Saved",
+                f"Saved {label.width}x{label.height}px @ {printer_dpi} DPI\n{path}")
+        else:
+            # Multiple files — pick a folder
+            folder = QFileDialog.getExistingDirectory(self, "Save Print Images To")
+            if not folder:
+                return
+            for name, img in self._images:
+                base = os.path.splitext(name)[0]
+                label = _prepare_label_image(
+                    img, target_w, target_h, dither, threshold, 0,
+                    no_stretch, align, gamma, crop)
+                out = os.path.join(folder, f"{base}_print.png")
+                label.save(out, dpi=(printer_dpi, printer_dpi))
+            QMessageBox.information(self, "Saved",
+                f"Saved {len(self._images)} images to {folder}")
 
     def _on_result(self, op_id, data):
         if op_id in ("print", "print_batch"):
