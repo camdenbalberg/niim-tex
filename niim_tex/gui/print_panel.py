@@ -242,7 +242,7 @@ class PrintPanel(QWidget):
         gamma_row = QHBoxLayout()
         gamma_row.addWidget(QLabel("Gamma:"))
         self.gamma_spin = QDoubleSpinBox()
-        self.gamma_spin.setRange(0.1, 3.0)
+        self.gamma_spin.setRange(0.01, 10.0)
         self.gamma_spin.setSingleStep(0.05)
         self.gamma_spin.setValue(0.55)
         self.gamma_spin.valueChanged.connect(self._schedule_preview)
@@ -280,12 +280,13 @@ class PrintPanel(QWidget):
         dither_row = QHBoxLayout()
         self.dither_cb = QCheckBox("Dither")
         self.dither_cb.setChecked(True)
-        self.dither_cb.stateChanged.connect(self._schedule_preview)
+        self.dither_cb.stateChanged.connect(self._on_dither_toggled)
         dither_row.addWidget(self.dither_cb)
         dither_row.addWidget(QLabel("Threshold:"))
         self.threshold_spin = QSpinBox()
         self.threshold_spin.setRange(0, 255)
         self.threshold_spin.setValue(128)
+        self.threshold_spin.setEnabled(False)  # only active when dither is off
         self.threshold_spin.valueChanged.connect(self._schedule_preview)
         dither_row.addWidget(self.threshold_spin)
         settings_layout.addLayout(dither_row)
@@ -311,16 +312,16 @@ class PrintPanel(QWidget):
             debug_layout.addLayout(row)
             return spin
 
-        self.brightness_spin = _slider_row("Brightness:", 0.1, 3.0, 1.0, 0.05, 2)
-        self.contrast_spin = _slider_row("Contrast:", 0.1, 3.0, 1.0, 0.05, 2)
-        self.sharpness_spin = _slider_row("Sharpness:", 0.0, 5.0, 1.0, 0.1, 1)
+        self.brightness_spin = _slider_row("Brightness:", 0.0, 10.0, 1.0, 0.05, 2)
+        self.contrast_spin = _slider_row("Contrast:", 0.0, 10.0, 1.0, 0.05, 2)
+        self.sharpness_spin = _slider_row("Sharpness:", 0.0, 10.0, 1.0, 0.1, 1)
 
         dpi_row = QHBoxLayout()
         lbl = QLabel("DPI:")
         lbl.setFixedWidth(70)
         dpi_row.addWidget(lbl)
         self.dpi_spin = QSpinBox()
-        self.dpi_spin.setRange(72, 1200)
+        self.dpi_spin.setRange(1, 9999)
         self.dpi_spin.setValue(300)
         self.dpi_spin.setSingleStep(50)
         self.dpi_spin.valueChanged.connect(self._schedule_preview)
@@ -532,6 +533,11 @@ class PrintPanel(QWidget):
             brightness, contrast, sharpness, self)
         self._preview_worker.finished.connect(self._on_preview_done)
         self._preview_worker.start()
+
+    def _on_dither_toggled(self, state):
+        dither_on = state == Qt.CheckState.Checked.value
+        self.threshold_spin.setEnabled(not dither_on)
+        self._schedule_preview()
 
     def _sync_zoom_spin(self, pct):
         self.zoom_spin.blockSignals(True)
