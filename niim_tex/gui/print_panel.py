@@ -16,6 +16,8 @@ from PyQt6.QtGui import QImage, QPixmap, QPainter, QWheelEvent, QKeySequence, QS
 from PIL import Image
 
 from niim_tex import DPI, LABEL_SIZES, mm_to_px
+from PIL import ImageEnhance
+
 from niim_tex.cli import open_image, _prepare_label_image, compile_tex_to_png
 
 
@@ -120,7 +122,9 @@ class PreviewWorker(QThread):
     finished = pyqtSignal(object, str)  # (QPixmap, info_text)
 
     def __init__(self, image, target_w, target_h, dither, threshold,
-                 no_stretch, crop, align, gamma, parent=None):
+                 no_stretch, crop, align, gamma,
+                 brightness=1.0, contrast=1.0, sharpness=1.0,
+                 parent=None):
         super().__init__(parent)
         self.image = image
         self.target_w = target_w
@@ -131,15 +135,28 @@ class PreviewWorker(QThread):
         self.crop = crop
         self.align = align
         self.gamma = gamma
+        self.brightness = brightness
+        self.contrast = contrast
+        self.sharpness = sharpness
 
     def run(self):
         try:
-            # Full pipeline — exact same output as print/save
+            from PIL import ImageEnhance
+
+            # Apply brightness/contrast/sharpness before the standard pipeline
+            img = self.image.copy()
+            if self.brightness != 1.0:
+                img = ImageEnhance.Brightness(img).enhance(self.brightness)
+            if self.contrast != 1.0:
+                img = ImageEnhance.Contrast(img).enhance(self.contrast)
+            if self.sharpness != 1.0:
+                img = ImageEnhance.Sharpness(img).enhance(self.sharpness)
+
+            # Full pipeline (resize, gamma, dither/threshold)
             label = _prepare_label_image(
-                self.image, self.target_w, self.target_h,
+                img, self.target_w, self.target_h,
                 self.dither, self.threshold, 0,
                 self.no_stretch, self.align, self.gamma, self.crop)
-            # Convert to grayscale for QPixmap, keep pixel data identical
             preview = label.convert("L")
             pixmap = pil_to_qpixmap(preview)
             info = f"{label.width}x{label.height}px"
@@ -270,6 +287,33 @@ class PrintPanel(QWidget):
         dither_row.addWidget(self.threshold_spin)
         settings_layout.addLayout(dither_row)
 
+        left_layout.addWidget(settings_group)
+
+        # ── Debug / Advanced tuning ─────────────────────────────────
+        debug_group = QGroupBox("Image Tuning")
+        debug_layout = QVBoxLayout(debug_group)
+
+        def _slider_row(label, min_val, max_val, default, step, decimals):
+            row = QHBoxLayout()
+            lbl = QLabel(label)
+            lbl.setFixedWidth(70)
+            row.addWidget(lbl)
+            spin = QDoubleSpinBox()
+            spin.setRange(min_val, max_val)
+            spin.setSingleStep(step)
+            spin.setDecimals(decimals)
+            spin.setValue(default)
+            spin.valueChanged.connect(self._schedule_preview)
+            row.addWidget(spin)
+            debug_layout.addLayout(row)
+            return spin
+
+        self.brightness_spin = _slider_row("Brightness:", 0.1, 3.0, 1.0, 0.05, 2)
+        self.contrast_spin = _slider_row("Contrast:", 0.1, 3.0, 1.0, 0.05, 2)
+        self.sharpness_spin = _slider_row("Sharpness:", 0.0, 5.0, 1.0, 0.1, 1)
+
+        left_layout.addWidget(debug_group)
+
         # Quantity
         qty_row = QHBoxLayout()
         qty_row.addWidget(QLabel("Copies:"))
@@ -278,9 +322,7 @@ class PrintPanel(QWidget):
         self.quantity_spin.setValue(1)
         qty_row.addWidget(self.quantity_spin)
         qty_row.addStretch()
-        settings_layout.addLayout(qty_row)
-
-        left_layout.addWidget(settings_group)
+        debug_layout.addLayout(qty_row)
 
         # Print + Save buttons
         btn_row = QHBoxLayout()
@@ -426,9 +468,14 @@ class PrintPanel(QWidget):
         dither = self.dither_cb.isChecked()
         threshold = self.threshold_spin.value()
 
+        brightness = self.brightness_spin.value()
+        contrast = self.contrast_spin.value()
+        sharpness = self.sharpness_spin.value()
+
         self._preview_worker = PreviewWorker(
             img, target_w, target_h, dither, threshold,
-            no_stretch, crop, align, gamma, self)
+            no_stretch, crop, align, gamma,
+            brightness, contrast, sharpness, self)
         self._preview_worker.finished.connect(self._on_preview_done)
         self._preview_worker.start()
 
@@ -462,11 +509,19 @@ class PrintPanel(QWidget):
         density = self.density_spin.value()
         quantity = self.quantity_spin.value()
 
+        brightness = self.brightness_spin.value()
+        contrast = self.contrast_spin.value()
+        sharpness = self.sharpness_spin.value()
+
         # Process all images
         items = []
         for name, img in self._images:
+            enhanced = img.copy()
+            if brightness != 1.0: enhanced = ImageEnhance.Brightness(enhanced).enhance(brightness)
+            if contrast != 1.0: enhanced = ImageEnhance.Contrast(enhanced).enhance(contrast)
+            if sharpness != 1.0: enhanced = ImageEnhance.Sharpness(enhanced).enhance(sharpness)
             label = _prepare_label_image(
-                img, target_w, target_h, dither, threshold, 0,
+                enhanced, target_w, target_h, dither, threshold, 0,
                 no_stretch, align, gamma, crop)
             items.append((label, density, quantity, 1))
 
@@ -491,10 +546,19 @@ class PrintPanel(QWidget):
         gamma = self.gamma_spin.value()
         dither = self.dither_cb.isChecked()
         threshold = self.threshold_spin.value()
+        brightness = self.brightness_spin.value()
+        contrast = self.contrast_spin.value()
+        sharpness = self.sharpness_spin.value()
         printer_dpi = getattr(self.ble.printer, 'DPI', 300) if self.ble.printer else 300
 
+        def _enhance(img):
+            e = img.copy()
+            if brightness != 1.0: e = ImageEnhance.Brightness(e).enhance(brightness)
+            if contrast != 1.0: e = ImageEnhance.Contrast(e).enhance(contrast)
+            if sharpness != 1.0: e = ImageEnhance.Sharpness(e).enhance(sharpness)
+            return e
+
         if len(self._images) == 1:
-            # Single file — save-as dialog
             name, img = self._images[0]
             base = os.path.splitext(name)[0]
             path, _ = QFileDialog.getSaveFileName(
@@ -503,20 +567,19 @@ class PrintPanel(QWidget):
             if not path:
                 return
             label = _prepare_label_image(
-                img, target_w, target_h, dither, threshold, 0,
+                _enhance(img), target_w, target_h, dither, threshold, 0,
                 no_stretch, align, gamma, crop)
             label.save(path, dpi=(printer_dpi, printer_dpi))
             QMessageBox.information(self, "Saved",
                 f"Saved {label.width}x{label.height}px @ {printer_dpi} DPI\n{path}")
         else:
-            # Multiple files — pick a folder
             folder = QFileDialog.getExistingDirectory(self, "Save Print Images To")
             if not folder:
                 return
             for name, img in self._images:
                 base = os.path.splitext(name)[0]
                 label = _prepare_label_image(
-                    img, target_w, target_h, dither, threshold, 0,
+                    _enhance(img), target_w, target_h, dither, threshold, 0,
                     no_stretch, align, gamma, crop)
                 out = os.path.join(folder, f"{base}_print.png")
                 label.save(out, dpi=(printer_dpi, printer_dpi))
