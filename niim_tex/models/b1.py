@@ -101,27 +101,34 @@ class B1Printer(NiimbotPrinter):
             await self._b1_cmd(0x15, struct.pack(">H", quantity))          # setQuantity
 
             # 2. Send image rows — write-with-response, no delay.
-            #    This is the proven approach from NiimPrintX. The BLE ACK
-            #    naturally paces each row. Works reliably for all label sizes.
-            #    Long labels (170mm+) may chunk due to BLE throughput limits —
-            #    use --save and print via phone app for those.
             for pkt in packets:
                 await self.client.write_gatt_char(self.char_uuid, pkt)
 
-            # 3. endPage — loop until acknowledged
+            # 3. Wait for printer to finish rendering, then endPage.
+            #    The printer buffers rows and prints asynchronously. We must
+            #    wait for it to physically finish before sending endPage,
+            #    otherwise it truncates the output.
+            #    Clear stale notifications that arrived during data transfer.
+            await self._stop_notify()
+            await asyncio.sleep(1.0)
+
+            # Use one-shot commands for post-print sequence (like NiimPrintX)
+            # to avoid stale notification issues from the data transfer phase.
+
+            # endPage
             for _ in range(300):
                 try:
-                    _, data = await self._b1_cmd(0xE3, b"\x01")
+                    _, data = await self._command(0xE3, b"\x01")
                     if data[0]:
                         break
                 except Exception:
                     pass
                 await asyncio.sleep(0.2)
 
-            # 4. Poll status until all copies done
+            # Poll status until done
             for _ in range(600):
                 try:
-                    _, data = await self._b1_cmd(0xA3, b"\x01")
+                    _, data = await self._command(0xA3, b"\x01")
                     if len(data) >= 2:
                         page = struct.unpack(">H", data[:2])[0]
                         if page >= quantity:
@@ -130,11 +137,14 @@ class B1Printer(NiimbotPrinter):
                     pass
                 await asyncio.sleep(0.2)
 
-            # 5. endPrint
-            await self._b1_cmd(0xF3, b"\x01")
+            # endPrint
+            await self._command(0xF3, b"\x01")
 
         finally:
-            await self._stop_notify()
+            try:
+                await self._stop_notify()
+            except Exception:
+                pass  # already stopped
 
     async def _b1_cmd(self, cmd, data, timeout=10):
         """Send command and wait for response (persistent notify, write-with-response)."""
