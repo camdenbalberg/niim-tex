@@ -47,18 +47,17 @@
   \draw[black!20, line width=0.3pt] (0.3,0.3) rectangle (49.7,69.7);
 
   % ── Photo frame ───────────────────────────────────────────────────
-  % Polaroid proportions: equal side/top margins, thick bottom margin
-  % Side margins: 3.5mm, Top margin: 3.5mm, Bottom margin: 16mm
-  % Photo area: 43mm wide x 50.5mm tall
-  \coverphoto{3.5}{16}{43}{50.5}{photo.jpg}
+  % Polaroid proportions: small side/top margins, thick bottom for caption
+  % Side margins: 2mm, Top margin: 2mm, Bottom margin: 12mm
+  % Photo area: 46mm wide x 56mm tall
+  \coverphoto{2}{12}{46}{56}{photo.jpg}
 
   % Thin line under photo (subtle, like real Polaroid film edge)
-  \draw[black!8, line width=0.2pt] (3.5,16) -- (46.5,16);
+  \draw[black!8, line width=0.2pt] (2,12) -- (48,12);
 
-  % ── Caption area (bottom 16mm) ────────────────────────────────────
-  % Use a handwriting-style feel — adjust text to taste
-  \node[anchor=center, font=\normalsize, text width=40mm, align=center]
-    at (25, 8.5) {your caption here};
+  % ── Caption area (bottom 12mm) ────────────────────────────────────
+  \node[anchor=center, font=\normalsize, text width=44mm, align=center]
+    at (25, 6.5) {your caption here};
 
 \end{tikzpicture}
 \end{document}
