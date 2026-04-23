@@ -215,7 +215,10 @@ class PrintPanel(QWidget):
         self.add_files_btn = QPushButton("Add Files...")
         self.add_files_btn.clicked.connect(self._on_add_files)
         btn_row.addWidget(self.add_files_btn)
-        self.clear_btn = QPushButton("Clear")
+        self.remove_btn = QPushButton("Remove")
+        self.remove_btn.clicked.connect(self._on_remove)
+        btn_row.addWidget(self.remove_btn)
+        self.clear_btn = QPushButton("Clear All")
         self.clear_btn.clicked.connect(self._on_clear)
         btn_row.addWidget(self.clear_btn)
         file_layout.addLayout(btn_row)
@@ -497,11 +500,20 @@ class PrintPanel(QWidget):
                     self.roll_combo.setCurrentIndex(idx)
                     return
 
+    def _on_remove(self):
+        row = self.file_list.currentRow()
+        if row >= 0 and row < len(self._images):
+            self._images.pop(row)
+            self.file_list.takeItem(row)
+            if not self._images:
+                self.preview_view.set_pixmap(QPixmap())
+                self.info_label.setText("")
+
     def _on_clear(self):
         self._images.clear()
         self.file_list.clear()
-        self.preview_label.setPixmap(QPixmap())
-        self.preview_label.setText("Select an image to preview")
+        self._current_idx = -1
+        self.preview_view.set_pixmap(QPixmap())
         self.info_label.setText("")
 
     def _on_file_selected(self, row):
