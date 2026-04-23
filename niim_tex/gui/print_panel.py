@@ -11,7 +11,9 @@ from PyQt6.QtWidgets import (
     QGraphicsPixmapItem,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
-from PyQt6.QtGui import QImage, QPixmap, QPainter, QWheelEvent, QKeySequence, QShortcut
+from PyQt6.QtGui import (QImage, QPixmap, QPainter, QWheelEvent, QKeySequence,
+                         QShortcut, QColor, QPen, QPainterPath)
+from PyQt6.QtWidgets import QGraphicsRectItem
 
 from PIL import Image
 
@@ -114,6 +116,172 @@ class ZoomablePreview(QGraphicsView):
             self.fit_to_view()
 
 
+class CropRect(QGraphicsRectItem):
+    """Draggable crop rectangle that stays within the image bounds."""
+
+    def __init__(self, rect, bounds, parent=None):
+        super().__init__(rect, parent)
+        self._bounds = bounds
+        self.setPen(QPen(QColor(255, 255, 255), 2, Qt.PenStyle.DashLine))
+        self.setBrush(Qt.BrushStyle.NoBrush)
+        self.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIsMovable, True)
+        self.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemSendsGeometryChanges, True)
+        self.setCursor(Qt.CursorShape.SizeAllCursor)
+        self.setZValue(10)
+
+    def itemChange(self, change, value):
+        if change == QGraphicsRectItem.GraphicsItemChange.ItemPositionChange:
+            # Clamp to image bounds
+            r = self.rect()
+            new_pos = value
+            x = max(self._bounds.x(), min(new_pos.x(), self._bounds.right() - r.width()))
+            y = max(self._bounds.y(), min(new_pos.y(), self._bounds.bottom() - r.height()))
+            from PyQt6.QtCore import QPointF
+            return QPointF(x, y)
+        return super().itemChange(change, value)
+
+
+class CropOverlay(QGraphicsRectItem):
+    """Semi-transparent darkening outside the crop area."""
+
+    def __init__(self, scene_rect, parent=None):
+        super().__init__(scene_rect, parent)
+        self.setBrush(QColor(0, 0, 0, 120))
+        self.setPen(Qt.PenStyle.NoPen)
+        self.setZValue(5)
+        self._hole = None
+
+    def set_hole(self, rect):
+        """Set the clear area (crop rectangle)."""
+        self._hole = rect
+
+    def paint(self, painter, option, widget=None):
+        if self._hole:
+            path = QPainterPath()
+            path.addRect(self.rect())
+            path.addRect(self._hole)
+            painter.setBrush(self.brush())
+            painter.setPen(self.pen())
+            painter.drawPath(path)
+        else:
+            super().paint(painter, option, widget)
+
+
+class CropView(QGraphicsView):
+    """Interactive crop editor: drag a rectangle on the source image."""
+
+    crop_changed = pyqtSignal(float, float, float, float)  # x, y, w, h as fractions
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._scene = QGraphicsScene(self)
+        self.setScene(self._scene)
+        self._pixmap_item = None
+        self._crop_rect = None
+        self._overlay = None
+        self._aspect = 1.0
+        self._img_w = 0
+        self._img_h = 0
+
+        self.setStyleSheet("background-color: #2c3e50; border: 1px solid #bdc3c7;")
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+
+    def set_image(self, pil_image, target_w, target_h):
+        """Show the source image with a crop rectangle of the target aspect ratio."""
+        self._scene.clear()
+        if pil_image is None:
+            return
+
+        # Auto-rotate source to match target orientation
+        img = pil_image
+        img_landscape = img.width > img.height
+        target_landscape = target_w > target_h
+        if img_landscape != target_landscape and img.width != img.height:
+            img = img.rotate(-90, expand=True)
+
+        pixmap = pil_to_qpixmap(img)
+        self._pixmap_item = self._scene.addPixmap(pixmap)
+        self._img_w = pixmap.width()
+        self._img_h = pixmap.height()
+        self._aspect = target_w / target_h
+
+        img_rect = pixmap.rect().toRectF()
+        self._scene.setSceneRect(img_rect)
+
+        # Calculate initial crop rect (centered, max size that fits)
+        scale = max(target_w / self._img_w, target_h / self._img_h)
+        # Crop rect in image coordinates
+        cw = target_w / scale
+        ch = target_h / scale
+        cx = (self._img_w - cw) / 2
+        cy = (self._img_h - ch) / 2
+
+        from PyQt6.QtCore import QRectF
+        crop_r = QRectF(0, 0, cw, ch)
+        self._crop_rect = CropRect(crop_r, img_rect)
+        self._crop_rect.setPos(cx, cy)
+        self._scene.addItem(self._crop_rect)
+
+        # Dark overlay
+        self._overlay = CropOverlay(img_rect)
+        self._scene.addItem(self._overlay)
+        self._update_overlay()
+
+        # Connect movement
+        self._crop_rect.setFlag(
+            QGraphicsRectItem.GraphicsItemFlag.ItemSendsGeometryChanges, True)
+
+        self.fitInView(self._pixmap_item, Qt.AspectRatioMode.KeepAspectRatio)
+
+        # Timer to track crop rect movement
+        self._track_timer = QTimer(self)
+        self._track_timer.setInterval(100)
+        self._track_timer.timeout.connect(self._on_crop_moved)
+        self._track_timer.start()
+
+    def _update_overlay(self):
+        if self._overlay and self._crop_rect:
+            r = self._crop_rect.rect()
+            pos = self._crop_rect.pos()
+            from PyQt6.QtCore import QRectF
+            self._overlay.set_hole(QRectF(pos.x(), pos.y(), r.width(), r.height()))
+            self._overlay.update()
+
+    def _on_crop_moved(self):
+        if not self._crop_rect or not self._img_w:
+            return
+        self._update_overlay()
+        pos = self._crop_rect.pos()
+        r = self._crop_rect.rect()
+        # Emit crop as fractions of image size
+        self.crop_changed.emit(
+            pos.x() / self._img_w,
+            pos.y() / self._img_h,
+            r.width() / self._img_w,
+            r.height() / self._img_h,
+        )
+
+    def wheelEvent(self, event):
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            delta = event.angleDelta().y()
+            factor = 1.15 if delta > 0 else 1 / 1.15
+            self.scale(factor, factor)
+            event.accept()
+        else:
+            super().wheelEvent(event)
+
+    def get_crop_box(self):
+        """Return (left, top, right, bottom) in image pixel coordinates."""
+        if not self._crop_rect:
+            return None
+        pos = self._crop_rect.pos()
+        r = self._crop_rect.rect()
+        return (int(pos.x()), int(pos.y()),
+                int(pos.x() + r.width()), int(pos.y() + r.height()))
+
+
 class PreviewWorker(QThread):
     """Background thread for image processing (keeps UI responsive).
 
@@ -202,6 +370,7 @@ class PrintPanel(QWidget):
         self._images = []       # [(filename, PIL.Image), ...]
         self._file_paths = []   # full paths for settings persistence
         self._current_idx = 0
+        self._crop_fractions = None  # (x, y, w, h) as fractions when using interactive crop
         self._preview_worker = None
         self._preview_timer = QTimer(self)
         self._preview_timer.setSingleShot(True)
@@ -460,7 +629,16 @@ class PrintPanel(QWidget):
 
         self.preview_view = ZoomablePreview()
         self.preview_view.zoom_changed.connect(self._sync_zoom_spin)
-        right_layout.addWidget(self.preview_view, 1)
+
+        self.crop_view = CropView()
+        self.crop_view.crop_changed.connect(self._on_interactive_crop)
+        self.crop_view.hide()
+
+        from PyQt6.QtWidgets import QStackedWidget
+        self._preview_stack = QStackedWidget()
+        self._preview_stack.addWidget(self.preview_view)   # index 0
+        self._preview_stack.addWidget(self.crop_view)       # index 1
+        right_layout.addWidget(self._preview_stack, 1)
 
         self.info_label = QLabel("Ctrl+Scroll to zoom, Ctrl+0 to fit")
         self.info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -589,18 +767,24 @@ class PrintPanel(QWidget):
         mode_id = self.mode_group.checkedId()
         no_stretch = mode_id == 1
         crop = mode_id == 2
+
+        # Show interactive crop editor when Crop mode is active
+        if crop:
+            self._preview_stack.setCurrentIndex(1)
+            self.crop_view.set_image(img, target_w, target_h)
+            self.info_label.setText("Drag the crop rectangle to reposition")
+            return
+
+        self._preview_stack.setCurrentIndex(0)
         align = self.align_combo.currentText()
         gamma = self.gamma_spin.value()
         dither = self.dither_cb.isChecked()
         threshold = self.threshold_spin.value()
 
-        crop_x = self.crop_x_spin.value()
-        crop_y = self.crop_y_spin.value()
-
         self._preview_worker = PreviewWorker(
             img, target_w, target_h, dither, threshold,
-            no_stretch, crop, align, gamma,
-            crop_x, crop_y,
+            no_stretch, False, align, gamma,
+            0, 0,
             self.preview_gamma_offset.value(),
             self.preview_dot_spread.value(),
             self.preview_darken.value(),
@@ -612,6 +796,28 @@ class PrintPanel(QWidget):
         dither_on = state == Qt.CheckState.Checked.value
         self.threshold_spin.setEnabled(not dither_on)
         self._schedule_preview()
+
+    def _on_interactive_crop(self, x, y, w, h):
+        """Called when user drags the crop rectangle."""
+        self._crop_fractions = (x, y, w, h)
+
+    def _apply_interactive_crop(self, img):
+        """Crop the source image using the interactive crop rectangle."""
+        if not self._crop_fractions:
+            return img
+        # Auto-rotate source to match target like CropView does
+        target_w, target_h = self._get_target_dims()
+        if target_w:
+            img_landscape = img.width > img.height
+            target_landscape = target_w > target_h
+            if img_landscape != target_landscape and img.width != img.height:
+                img = img.rotate(-90, expand=True)
+        x, y, w, h = self._crop_fractions
+        left = int(x * img.width)
+        top = int(y * img.height)
+        right = int((x + w) * img.width)
+        bottom = int((y + h) * img.height)
+        return img.crop((left, top, right, bottom))
 
     def _sync_zoom_spin(self, pct):
         self.zoom_spin.blockSignals(True)
@@ -668,16 +874,19 @@ class PrintPanel(QWidget):
         density = self.density_spin.value()
         quantity = self.quantity_spin.value()
 
-        crop_x = self.crop_x_spin.value()
-        crop_y = self.crop_y_spin.value()
-
         # Process all images (no preview corrections — those are display-only)
         items = []
         for name, img in self._images:
-            src = self._apply_crop_offset(img, crop, crop_x, crop_y)
-            label = _prepare_label_image(
-                src, target_w, target_h, dither, threshold, 0,
-                no_stretch, align, gamma, crop)
+            if crop and self._crop_fractions:
+                # Interactive crop — pre-crop then stretch to fill
+                src = self._apply_interactive_crop(img)
+                label = _prepare_label_image(
+                    src, target_w, target_h, dither, threshold, 0,
+                    False, align, gamma, False)
+            else:
+                label = _prepare_label_image(
+                    img, target_w, target_h, dither, threshold, 0,
+                    no_stretch, align, gamma, crop)
             items.append((label, density, quantity, 1))
 
         self.print_btn.setEnabled(False)
@@ -702,8 +911,16 @@ class PrintPanel(QWidget):
         dither = self.dither_cb.isChecked()
         threshold = self.threshold_spin.value()
         printer_dpi = getattr(self.ble.printer, 'DPI', 300) if self.ble.printer else 300
-        crop_x = self.crop_x_spin.value()
-        crop_y = self.crop_y_spin.value()
+
+        def _process(img):
+            if crop and self._crop_fractions:
+                src = self._apply_interactive_crop(img)
+                return _prepare_label_image(
+                    src, target_w, target_h, dither, threshold, 0,
+                    False, align, gamma, False)
+            return _prepare_label_image(
+                img, target_w, target_h, dither, threshold, 0,
+                no_stretch, align, gamma, crop)
 
         if len(self._images) == 1:
             name, img = self._images[0]
@@ -713,10 +930,7 @@ class PrintPanel(QWidget):
                 "PNG (*.png);;All Files (*)")
             if not path:
                 return
-            src = self._apply_crop_offset(img, crop, crop_x, crop_y)
-            label = _prepare_label_image(
-                src, target_w, target_h, dither, threshold, 0,
-                no_stretch, align, gamma, crop)
+            label = _process(img)
             label.save(path, dpi=(printer_dpi, printer_dpi))
             QMessageBox.information(self, "Saved",
                 f"Saved {label.width}x{label.height}px @ {printer_dpi} DPI\n{path}")
@@ -726,10 +940,7 @@ class PrintPanel(QWidget):
                 return
             for name, img in self._images:
                 base = os.path.splitext(name)[0]
-                src = self._apply_crop_offset(img, crop, crop_x, crop_y)
-                label = _prepare_label_image(
-                    src, target_w, target_h, dither, threshold, 0,
-                    no_stretch, align, gamma, crop)
+                label = _process(img)
                 out = os.path.join(folder, f"{base}_print.png")
                 label.save(out, dpi=(printer_dpi, printer_dpi))
             QMessageBox.information(self, "Saved",
