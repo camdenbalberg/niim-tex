@@ -688,36 +688,60 @@ class PrintPanel(QWidget):
             QMessageBox.warning(self, "No Images", f"No image files found in {folder}")
 
     def load_files(self, paths):
-        """Load image/PDF/tex files into the file list."""
-        printer_dpi = getattr(self.ble.printer, 'DPI', DPI) if self.ble.printer else 300
+        """Add files to the list (lazy — images loaded on demand, not upfront)."""
         for p in paths:
-            try:
-                if p.lower().endswith('.tex'):
-                    # Compile .tex to PNG
-                    rotate = 90  # default
-                    printer_printable = getattr(self.ble.printer, 'PRINTABLE_HEIGHT_MM', 12) if self.ble.printer else 50
-                    from niim_tex.cli import parse_geometry_from_tex, find_label_size_for_geometry
-                    pw, ph = parse_geometry_from_tex(p)
-                    if pw and ph and pw < ph:
-                        rotate = 0
-                    elif pw and ph:
-                        _, _, ll = find_label_size_for_geometry(pw, ph)
-                        if ll and printer_printable >= ll:
-                            rotate = 0
-                    png_path, _ = compile_tex_to_png(p, dpi=printer_dpi, rotate=rotate)
-                    img = Image.open(png_path).convert("L")
-                else:
-                    img = open_image(p, dpi=printer_dpi).convert("L")
-                name = os.path.basename(p)
-                self._images.append((name, img))
-                self._file_paths.append(os.path.abspath(p))
-                self.file_list.addItem(name)
+            abs_p = os.path.abspath(p)
+            if abs_p in self._file_paths:
+                continue  # skip duplicates
+            name = os.path.basename(p)
+            self._images.append((name, None))  # None = not loaded yet
+            self._file_paths.append(abs_p)
+            self.file_list.addItem(name)
 
-                # Auto-detect roll size from image dimensions
-                if len(self._images) == 1:
-                    self._auto_detect_roll(img, printer_dpi)
+        # Auto-detect roll from first file
+        if len(self._images) >= 1 and self._images[0][1] is None:
+            try:
+                img = self._load_image(self._file_paths[0])
+                self._images[0] = (self._images[0][0], img)
+                printer_dpi = getattr(self.ble.printer, 'DPI', DPI) if self.ble.printer else 300
+                self._auto_detect_roll(img, printer_dpi)
+            except Exception:
+                pass
+
+        if self.file_list.count() > 0 and self.file_list.currentRow() < 0:
+            self.file_list.setCurrentRow(0)
+
+    def _load_image(self, path):
+        """Load and convert a single image (called on demand)."""
+        printer_dpi = getattr(self.ble.printer, 'DPI', DPI) if self.ble.printer else 300
+        if path.lower().endswith('.tex'):
+            rotate = 90
+            printer_printable = getattr(self.ble.printer, 'PRINTABLE_HEIGHT_MM', 12) if self.ble.printer else 50
+            from niim_tex.cli import parse_geometry_from_tex, find_label_size_for_geometry
+            pw, ph = parse_geometry_from_tex(path)
+            if pw and ph and pw < ph:
+                rotate = 0
+            elif pw and ph:
+                _, _, ll = find_label_size_for_geometry(pw, ph)
+                if ll and printer_printable >= ll:
+                    rotate = 0
+            png_path, _ = compile_tex_to_png(path, dpi=printer_dpi, rotate=rotate)
+            return Image.open(png_path).convert("L")
+        else:
+            return open_image(path, dpi=printer_dpi).convert("L")
+
+    def _get_image(self, idx):
+        """Get image at index, loading lazily if needed."""
+        name, img = self._images[idx]
+        if img is None:
+            try:
+                img = self._load_image(self._file_paths[idx])
+                self._images[idx] = (name, img)
             except Exception as e:
-                QMessageBox.warning(self, "Open Error", f"Could not open {os.path.basename(p)}:\n{e}")
+                QMessageBox.warning(self, "Load Error",
+                    f"Could not load {name}:\n{e}")
+                return None
+        return img
 
         if self.file_list.count() > 0 and self.file_list.currentRow() < 0:
             self.file_list.setCurrentRow(0)
@@ -783,7 +807,9 @@ class PrintPanel(QWidget):
             self.info_label.setText("Select a roll size for preview")
             return
 
-        _, img = self._images[self._current_idx]
+        img = self._get_image(self._current_idx)
+        if img is None:
+            return
         mode_id = self.mode_group.checkedId()
         no_stretch = mode_id == 1
         crop = mode_id == 2
@@ -901,7 +927,9 @@ class PrintPanel(QWidget):
 
         items = []
         for i in selected_rows:
-            name, img = self._images[i]
+            img = self._get_image(i)
+            if img is None:
+                continue
             if crop and self._crop_fractions:
                 # Interactive crop — pre-crop then stretch to fill
                 src = self._apply_interactive_crop(img)
@@ -948,7 +976,10 @@ class PrintPanel(QWidget):
                 no_stretch, align, gamma, crop)
 
         if len(self._images) == 1:
-            name, img = self._images[0]
+            name = self._images[0][0]
+            img = self._get_image(0)
+            if img is None:
+                return
             base = os.path.splitext(name)[0]
             path, _ = QFileDialog.getSaveFileName(
                 self, "Save Print Image", f"{base}_print.png",
@@ -963,7 +994,10 @@ class PrintPanel(QWidget):
             folder = QFileDialog.getExistingDirectory(self, "Save Print Images To")
             if not folder:
                 return
-            for name, img in self._images:
+            for i, (name, _) in enumerate(self._images):
+                img = self._get_image(i)
+                if img is None:
+                    continue
                 base = os.path.splitext(name)[0]
                 label = _process(img)
                 out = os.path.join(folder, f"{base}_print.png")
