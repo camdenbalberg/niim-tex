@@ -930,17 +930,37 @@ class PrintPanel(QWidget):
             dark = self.preview_darken.value()
             bp = self.preview_black_pt.value()
 
-        # Kill any previous worker
-        if self._preview_worker and self._preview_worker.isRunning():
-            self._preview_worker.finished.disconnect()
-            self._preview_worker.wait(100)
+        # Process synchronously (fast enough, avoids thread signal issues)
+        try:
+            from PIL import ImageFilter
 
-        self._preview_worker = PreviewWorker(
-            img, target_w, target_h, dither, threshold,
-            no_stretch, False, align, gamma,
-            0, 0, g_ofs, d_spr, dark, bp)
-        self._preview_worker.finished.connect(self._on_preview_done)
-        self._preview_worker.start()
+            preview_gamma = max(0.01, gamma + g_ofs)
+            label = _prepare_label_image(
+                img, target_w, target_h, dither, threshold, 0,
+                no_stretch, align, preview_gamma, False)
+
+            preview = label.convert("L")
+
+            if d_spr > 0:
+                preview = preview.filter(ImageFilter.GaussianBlur(radius=d_spr))
+
+            ibp = int(bp)
+            if dark != 1.0 or ibp > 0:
+                lut = []
+                for i in range(256):
+                    v = int(255 * (i / 255) ** dark) if dark != 1.0 else i
+                    if v <= ibp:
+                        v = 0
+                    lut.append(min(255, v))
+                preview = preview.point(lut)
+
+            pixmap = pil_to_qpixmap(preview)
+            self.preview_view.set_pixmap(pixmap)
+            self.info_label.setText(
+                f"{label.width}x{label.height}px | "
+                f"g={preview_gamma:.2f} blur={d_spr} dark={dark} bp={ibp}")
+        except Exception as e:
+            self.info_label.setText(f"Error: {e}")
 
     def _on_dither_toggled(self, state):
         dither_on = state == Qt.CheckState.Checked.value
@@ -996,6 +1016,7 @@ class PrintPanel(QWidget):
         self.zoom_spin.blockSignals(False)
 
     def _on_preview_done(self, pixmap, info):
+        import sys; print(f"[preview_done] info={info}", flush=True, file=sys.stderr)
         if pixmap:
             self.preview_view.set_pixmap(pixmap)
         self.info_label.setText(info)
