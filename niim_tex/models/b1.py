@@ -100,28 +100,13 @@ class B1Printer(NiimbotPrinter):
             await self._b1_cmd(0x13, struct.pack(">HH", img.height, img.width))
             await self._b1_cmd(0x15, struct.pack(">H", quantity))          # setQuantity
 
-            # 2. Send image rows.
-            #    Based on hass-niimbot / niimbluelib / NiimPrintX research:
-            #    - All working BLE implementations use write-without-response
-            #    - 10ms inter-row delay is the standard (100 rows/sec)
-            #    - hass-niimbot adds a periodic write-with-response every Nth
-            #      row as a flow-control gate (blocks until BLE ACK received)
-            #    - Empty rows can be compressed via command 0x84
-            BATCH = 20   # write-with-response sync every N rows
-            DELAY = 0.007  # 7ms between rows → ~140 rows/sec
-            for i, pkt in enumerate(packets):
-                if (i + 1) % BATCH == 0:
-                    # Sync write — BLE ACK acts as flow control checkpoint
-                    await self.client.write_gatt_char(self.char_uuid, pkt)
-                else:
-                    await self.client.write_gatt_char(
-                        self.char_uuid, pkt, response=False)
-                    await asyncio.sleep(DELAY)
-
-            # Wait for the printer to finish rendering all buffered rows.
-            # Long labels (170mm = 2008 rows) need significant processing time.
-            wait_secs = max(1.0, img.height / 500)
-            await asyncio.sleep(wait_secs)
+            # 2. Send image rows — write-with-response, no delay.
+            #    This is the proven approach from NiimPrintX. The BLE ACK
+            #    naturally paces each row. Works reliably for all label sizes.
+            #    Long labels (170mm+) may chunk due to BLE throughput limits —
+            #    use --save and print via phone app for those.
+            for pkt in packets:
+                await self.client.write_gatt_char(self.char_uuid, pkt)
 
             # 3. endPage — loop until acknowledged
             for _ in range(300):
