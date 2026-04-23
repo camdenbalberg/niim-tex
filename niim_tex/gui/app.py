@@ -51,11 +51,10 @@ class MainWindow(QMainWindow):
         self.ble.status_updated.connect(self._on_status)
         self.ble.print_progress.connect(self._on_print_progress)
 
-        # Load default file if it exists
-        default = r"C:\Users\Camden\Documents\Coding Projects\LaTeX to NIIMBOT D110 print\my labels\ski trip photobooth.pdf"
-        if os.path.isfile(default):
-            self.tabs.setCurrentWidget(self.print_panel)
-            self.print_panel.load_files([default])
+        # Restore saved settings
+        self.print_panel.restore_settings(self.settings)
+        tab = self.settings.value("tab", 0, type=int)
+        self.tabs.setCurrentIndex(tab)
 
     def _build_status_bar(self):
         status = QStatusBar()
@@ -103,6 +102,8 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         self.settings.setValue("geometry", self.saveGeometry())
+        self.settings.setValue("tab", self.tabs.currentIndex())
+        self.print_panel.save_settings(self.settings)
         self.ble.do_disconnect()
         self.ble.stop()
         event.accept()

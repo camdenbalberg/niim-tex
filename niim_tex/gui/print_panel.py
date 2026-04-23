@@ -185,6 +185,7 @@ class PrintPanel(QWidget):
         super().__init__(parent)
         self.ble = ble_thread
         self._images = []       # [(filename, PIL.Image), ...]
+        self._file_paths = []   # full paths for settings persistence
         self._current_idx = 0
         self._preview_worker = None
         self._preview_timer = QTimer(self)
@@ -473,6 +474,7 @@ class PrintPanel(QWidget):
                     img = open_image(p, dpi=printer_dpi).convert("L")
                 name = os.path.basename(p)
                 self._images.append((name, img))
+                self._file_paths.append(os.path.abspath(p))
                 self.file_list.addItem(name)
 
                 # Auto-detect roll size from image dimensions
@@ -504,6 +506,7 @@ class PrintPanel(QWidget):
         row = self.file_list.currentRow()
         if row >= 0 and row < len(self._images):
             self._images.pop(row)
+            self._file_paths.pop(row)
             self.file_list.takeItem(row)
             if not self._images:
                 self.preview_view.set_pixmap(QPixmap())
@@ -511,6 +514,7 @@ class PrintPanel(QWidget):
 
     def _on_clear(self):
         self._images.clear()
+        self._file_paths.clear()
         self.file_list.clear()
         self._current_idx = -1
         self.preview_view.set_pixmap(QPixmap())
@@ -700,3 +704,80 @@ class PrintPanel(QWidget):
 
     def _on_printer_disconnected(self):
         pass
+
+    # ── Settings persistence ─────────────────────────────────────────
+
+    def save_settings(self, s):
+        """Save all panel state to QSettings."""
+        # Files
+        paths = []
+        for name, img in self._images:
+            # Store the original path if we have it
+            paths.append(name)
+        s.setValue("print/file_paths", self._file_paths if hasattr(self, '_file_paths') else [])
+
+        # Label settings
+        s.setValue("print/roll", self.roll_combo.currentData())
+        s.setValue("print/density", self.density_spin.value())
+        s.setValue("print/gamma", self.gamma_spin.value())
+        s.setValue("print/resize_mode", self.mode_group.checkedId())
+        s.setValue("print/align", self.align_combo.currentText())
+        s.setValue("print/dither", self.dither_cb.isChecked())
+        s.setValue("print/threshold", self.threshold_spin.value())
+        s.setValue("print/quantity", self.quantity_spin.value())
+        s.setValue("print/dpi", self.dpi_spin.value())
+
+        # Preview corrections
+        s.setValue("preview/gamma_offset", self.preview_gamma_offset.value())
+        s.setValue("preview/dot_spread", self.preview_dot_spread.value())
+        s.setValue("preview/darken", self.preview_darken.value())
+        s.setValue("preview/black_pt", self.preview_black_pt.value())
+
+        # Display
+        s.setValue("preview/render", self.render_combo.currentIndex())
+        s.setValue("preview/zoom", self.zoom_spin.value())
+
+    def restore_settings(self, s):
+        """Restore all panel state from QSettings."""
+        # Label settings
+        roll = s.value("print/roll")
+        if roll:
+            idx = self.roll_combo.findData(roll)
+            if idx >= 0:
+                self.roll_combo.setCurrentIndex(idx)
+
+        self.density_spin.setValue(int(s.value("print/density", 3)))
+        self.gamma_spin.setValue(float(s.value("print/gamma", 0.55)))
+
+        mode = int(s.value("print/resize_mode", 0))
+        btn = self.mode_group.button(mode)
+        if btn:
+            btn.setChecked(True)
+
+        align = s.value("print/align", "center")
+        idx = self.align_combo.findText(align)
+        if idx >= 0:
+            self.align_combo.setCurrentIndex(idx)
+
+        self.dither_cb.setChecked(s.value("print/dither", True, type=bool))
+        self.threshold_spin.setValue(int(s.value("print/threshold", 128)))
+        self.quantity_spin.setValue(int(s.value("print/quantity", 1)))
+        self.dpi_spin.setValue(int(s.value("print/dpi", 300)))
+
+        # Preview corrections
+        self.preview_gamma_offset.setValue(float(s.value("preview/gamma_offset", -0.30)))
+        self.preview_dot_spread.setValue(float(s.value("preview/dot_spread", 1.3)))
+        self.preview_darken.setValue(float(s.value("preview/darken", 4.20)))
+        self.preview_black_pt.setValue(float(s.value("preview/black_pt", 49.0)))
+
+        # Display
+        self.render_combo.setCurrentIndex(int(s.value("preview/render", 0)))
+        self.zoom_spin.setValue(int(s.value("preview/zoom", 30)))
+
+        # Files
+        paths = s.value("print/file_paths", [])
+        if paths and isinstance(paths, list):
+            valid = [p for p in paths if os.path.isfile(p)]
+            if valid:
+                self._file_paths = valid
+                self.load_files(valid)
