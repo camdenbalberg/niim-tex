@@ -140,6 +140,50 @@ class B1Printer(NiimbotPrinter):
         from ..protocol import HeartbeatType
         return await super().heartbeat(hb_type or HeartbeatType.ADVANCED1)
 
+    async def get_sound(self, sound_type):
+        if self._usb:
+            payload = bytes((0x02, int(sound_type), 0x01))
+            _, data = self._usb_cmd(0x58, payload)
+            return bool(data[-1]) if data else None
+        return await super().get_sound(sound_type)
+
+    async def set_sound(self, sound_type, enabled):
+        if self._usb:
+            payload = bytes((0x01, int(sound_type), 0x01 if enabled else 0x00))
+            _, data = self._usb_cmd(0x58, payload)
+            return bool(data[0]) if data else True
+        return await super().set_sound(sound_type, enabled)
+
+    async def set_auto_shutdown_time(self, time_setting):
+        if self._usb:
+            _, data = self._usb_cmd(0x27, bytes((int(time_setting),)))
+            return bool(data[0])
+        return await super().set_auto_shutdown_time(time_setting)
+
+    async def set_density(self, density):
+        if self._usb:
+            _, data = self._usb_cmd(0x21, bytes((density,)))
+            return bool(data[0])
+        return await super().set_density(density)
+
+    async def calibrate_label(self, value=1):
+        if self._usb:
+            _, data = self._usb_cmd(0x8E, bytes((value,)))
+            return bool(data[0]) if data else True
+        return await super().calibrate_label(value)
+
+    async def print_test_page(self):
+        if self._usb:
+            _, data = self._usb_cmd(0x5A, b"\x01")
+            return bool(data[0]) if data else True
+        return await super().print_test_page()
+
+    async def cancel_print(self):
+        if self._usb:
+            _, data = self._usb_cmd(0xDA, b"\x01")
+            return bool(data[0]) if data else True
+        return await super().cancel_print()
+
     def _heartbeat_usb(self):
         _, data = self._usb_cmd(0xDC, b"\x01")
         result = {"raw": data.hex(), "closing_state": None,
@@ -210,9 +254,9 @@ class B1Printer(NiimbotPrinter):
               f"{time.time()-t0:.1f}s")
 
         # Printer prints as data arrives over USB — by the time the last
-        # row is sent, the printer is nearly done. Just wait a brief
-        # moment for the last rows to render, then close out.
-        time.sleep(2)
+        # row is sent, the printer is nearly done. Wait for the last
+        # rows to render before closing out.
+        time.sleep(4)
 
         try:
             self._usb_cmd(0xE3, b"\x01")
