@@ -209,27 +209,11 @@ class B1Printer(NiimbotPrinter):
         print(f"  [USB] All {len(packets)} rows sent in "
               f"{time.time()-t0:.1f}s")
 
-        # Wait for the printer to physically finish printing.
-        # Data arrives much faster over USB than the printer can render,
-        # so we must wait for the mechanical print to complete before
-        # sending endPage, otherwise it ejects the label early.
-        # ~120 rows/sec print speed.
-        print_time = len(packets) / 120
-        print(f"  [USB] Waiting {print_time:.0f}s for print to finish...")
-        time.sleep(print_time)
-
-        # endPage — poll until acknowledged
-        for _ in range(60):
-            try:
-                _, data = self._usb_cmd(0xE3, b"\x01")
-                if data[0]:
-                    break
-            except Exception:
-                pass
-            time.sleep(0.5)
-
-        # Poll status
-        for _ in range(60):
+        # Poll printer status until it finishes printing.
+        # Don't send endPage until the printer reports the page is done —
+        # sending it early ejects the label mid-print.
+        print(f"  [USB] Waiting for print to finish...")
+        for _ in range(600):
             try:
                 _, data = self._usb_cmd(0xA3, b"\x01")
                 if len(data) >= 2:
@@ -238,8 +222,13 @@ class B1Printer(NiimbotPrinter):
                         break
             except Exception:
                 pass
-            time.sleep(0.5)
+            time.sleep(0.3)
 
+        # endPage + endPrint
+        try:
+            self._usb_cmd(0xE3, b"\x01")
+        except Exception:
+            pass
         self._usb_cmd(0xF3, b"\x01")
         print(f"  [USB] Total: {time.time()-t0:.1f}s")
 
