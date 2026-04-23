@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QScrollArea, QSplitter, QApplication, QGraphicsView, QGraphicsScene,
     QGraphicsPixmapItem,
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QRectF, QPointF
 from PyQt6.QtGui import (QImage, QPixmap, QPainter, QWheelEvent, QKeySequence,
                          QShortcut, QColor, QPen, QPainterPath)
 from PyQt6.QtWidgets import QGraphicsRectItem
@@ -117,29 +117,134 @@ class ZoomablePreview(QGraphicsView):
 
 
 class CropRect(QGraphicsRectItem):
-    """Draggable crop rectangle that stays within the image bounds."""
+    """Draggable, resizable crop rectangle with corner/edge handles.
 
-    def __init__(self, rect, bounds, parent=None):
+    Drag the body to move. Drag edges or corners to resize (maintains
+    aspect ratio). Stays clamped within the image bounds.
+    """
+
+    HANDLE_SIZE = 8  # pixels in scene coords
+
+    def __init__(self, rect, bounds, aspect, parent=None):
         super().__init__(rect, parent)
         self._bounds = bounds
+        self._aspect = aspect  # w/h ratio to maintain
+        self._dragging = None  # None, 'move', or handle name
+        self._drag_start = None
+        self._rect_start = None
+        self._pos_start = None
         self.setPen(QPen(QColor(255, 255, 255), 2, Qt.PenStyle.DashLine))
         from PyQt6.QtGui import QBrush
         self.setBrush(QBrush(Qt.BrushStyle.NoBrush))
-        self.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIsMovable, True)
         self.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemSendsGeometryChanges, True)
-        self.setCursor(Qt.CursorShape.SizeAllCursor)
+        self.setAcceptHoverEvents(True)
         self.setZValue(10)
 
-    def itemChange(self, change, value):
-        if change == QGraphicsRectItem.GraphicsItemChange.ItemPositionChange:
-            # Clamp to image bounds
+    def _handle_rects(self):
+        """Return dict of handle name → QRectF in item coords."""
+        r = self.rect()
+        s = self.HANDLE_SIZE
+        hs = s / 2
+        return {
+            'tl': QRectF(r.left() - hs, r.top() - hs, s, s),
+            'tr': QRectF(r.right() - hs, r.top() - hs, s, s),
+            'bl': QRectF(r.left() - hs, r.bottom() - hs, s, s),
+            'br': QRectF(r.right() - hs, r.bottom() - hs, s, s),
+        }
+
+    def _hit_handle(self, pos):
+        for name, hr in self._handle_rects().items():
+            if hr.contains(pos):
+                return name
+        return None
+
+    def paint(self, painter, option, widget=None):
+        super().paint(painter, option, widget)
+        # Draw corner handles
+        painter.setBrush(QColor(255, 255, 255))
+        painter.setPen(QPen(QColor(0, 0, 0), 1))
+        for hr in self._handle_rects().values():
+            painter.drawRect(hr)
+
+    def hoverMoveEvent(self, event):
+        handle = self._hit_handle(event.pos())
+        if handle in ('tl', 'br'):
+            self.setCursor(Qt.CursorShape.SizeFDiagCursor)
+        elif handle in ('tr', 'bl'):
+            self.setCursor(Qt.CursorShape.SizeBDiagCursor)
+        elif self.rect().contains(event.pos()):
+            self.setCursor(Qt.CursorShape.SizeAllCursor)
+        else:
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            handle = self._hit_handle(event.pos())
+            if handle:
+                self._dragging = handle
+            elif self.rect().contains(event.pos()):
+                self._dragging = 'move'
+            self._drag_start = event.scenePos()
+            self._rect_start = QRectF(self.rect())
+            self._pos_start = QPointF(self.pos())
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if not self._dragging:
+            return
+        delta = event.scenePos() - self._drag_start
+
+        if self._dragging == 'move':
+            new_pos = self._pos_start + delta
             r = self.rect()
-            new_pos = value
             x = max(self._bounds.x(), min(new_pos.x(), self._bounds.right() - r.width()))
             y = max(self._bounds.y(), min(new_pos.y(), self._bounds.bottom() - r.height()))
-            from PyQt6.QtCore import QPointF
-            return QPointF(x, y)
-        return super().itemChange(change, value)
+            self.setPos(x, y)
+        else:
+            # Resize from corner, maintaining aspect ratio
+            rs = self._rect_start
+            if self._dragging == 'br':
+                new_w = max(20, rs.width() + delta.x())
+                new_h = new_w / self._aspect
+                self.setRect(QRectF(0, 0, new_w, new_h))
+            elif self._dragging == 'tl':
+                new_w = max(20, rs.width() - delta.x())
+                new_h = new_w / self._aspect
+                self.setRect(QRectF(0, 0, new_w, new_h))
+                self.setPos(self._pos_start.x() + rs.width() - new_w,
+                           self._pos_start.y() + rs.height() - new_h)
+            elif self._dragging == 'tr':
+                new_w = max(20, rs.width() + delta.x())
+                new_h = new_w / self._aspect
+                self.setRect(QRectF(0, 0, new_w, new_h))
+                self.setPos(self._pos_start.x(),
+                           self._pos_start.y() + rs.height() - new_h)
+            elif self._dragging == 'bl':
+                new_w = max(20, rs.width() - delta.x())
+                new_h = new_w / self._aspect
+                self.setRect(QRectF(0, 0, new_w, new_h))
+                self.setPos(self._pos_start.x() + rs.width() - new_w,
+                           self._pos_start.y())
+
+            # Clamp to bounds
+            r = self.rect()
+            p = self.pos()
+            if p.x() < self._bounds.x():
+                self.setPos(self._bounds.x(), p.y())
+            if p.y() < self._bounds.y():
+                self.setPos(self.pos().x(), self._bounds.y())
+            if p.x() + r.width() > self._bounds.right():
+                cw = self._bounds.right() - self.pos().x()
+                self.setRect(QRectF(0, 0, cw, cw / self._aspect))
+            if p.y() + r.height() > self._bounds.bottom():
+                ch = self._bounds.bottom() - self.pos().y()
+                self.setRect(QRectF(0, 0, ch * self._aspect, ch))
+
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        self._dragging = None
+        event.accept()
 
 
 class CropOverlay(QGraphicsRectItem):
@@ -221,7 +326,7 @@ class CropView(QGraphicsView):
 
         from PyQt6.QtCore import QRectF
         crop_r = QRectF(0, 0, cw, ch)
-        self._crop_rect = CropRect(crop_r, img_rect)
+        self._crop_rect = CropRect(crop_r, img_rect, self._aspect)
         self._crop_rect.setPos(cx, cy)
         self._scene.addItem(self._crop_rect)
 
@@ -875,6 +980,8 @@ class PrintPanel(QWidget):
         self.preview_view.setRenderHint(
             QPainter.RenderHint.SmoothPixmapTransform, smooth)
         self.preview_view.viewport().update()
+        # Also force re-render the preview
+        self._schedule_preview()
 
     def _on_zoom_spin(self, pct):
         self.preview_view._auto_fit = False
