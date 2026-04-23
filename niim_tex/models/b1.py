@@ -206,31 +206,14 @@ class B1Printer(NiimbotPrinter):
             self._usb.ser.write(pkt)
         self._usb.ser.flush()
 
-        send_time = time.time() - t0
-        print(f"  [USB] All {len(packets)} rows sent in {send_time:.1f}s")
+        print(f"  [USB] All {len(packets)} rows sent in "
+              f"{time.time()-t0:.1f}s")
 
-        # The printer reports "done" via status poll as soon as it receives
-        # all data — NOT when it finishes physically printing. We must wait
-        # for the actual mechanical print to complete.
-        #
-        # Strategy: estimate print time from row count, subtract the time
-        # data was streaming (printer was printing during transfer), then
-        # wait the remainder. Printer speed: ~150 rows/sec.
-        total_print_time = len(packets) / 150
-        remaining = max(0, total_print_time - send_time)
-        if remaining > 0:
-            print(f"  [USB] Waiting {remaining:.0f}s for print to finish...")
-            # Poll heartbeat during wait to keep connection alive
-            waited = 0
-            while waited < remaining:
-                time.sleep(1.0)
-                waited += 1
-                try:
-                    self._usb_cmd(0xDC, b"\x01")  # heartbeat keepalive
-                except Exception:
-                    pass
+        # Printer prints as data arrives over USB — by the time the last
+        # row is sent, the printer is nearly done. Just wait a brief
+        # moment for the last rows to render, then close out.
+        time.sleep(2)
 
-        # Now safe to end
         try:
             self._usb_cmd(0xE3, b"\x01")
         except Exception:
