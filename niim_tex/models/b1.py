@@ -75,6 +75,85 @@ class B1Printer(NiimbotPrinter):
         """Send raw bytes over USB (no response wait)."""
         self._usb.write_raw(raw_bytes)
 
+    # Override base class methods to route through USB when connected
+    async def get_info(self):
+        if self._usb:
+            return self._get_info_usb()
+        return await super().get_info()
+
+    def _get_info_usb(self):
+        from ..protocol import InfoKey
+        result = {}
+        _, data = self._usb_cmd(0x40, bytes((InfoKey.SERIAL,)))
+        result["serial"] = data.hex()
+        _, data = self._usb_cmd(0x40, bytes((InfoKey.SOFTWARE_VERSION,)))
+        result["software"] = int.from_bytes(data, "big") / 100
+        _, data = self._usb_cmd(0x40, bytes((InfoKey.HARDWARE_VERSION,)))
+        result["hardware"] = int.from_bytes(data, "big") / 100
+        _, data = self._usb_cmd(0x40, bytes((InfoKey.BATTERY,)))
+        result["battery"] = min(int.from_bytes(data, "big") * 25, 100)
+        _, data = self._usb_cmd(0x40, bytes((InfoKey.DENSITY,)))
+        result["density"] = int.from_bytes(data, "big")
+        _, data = self._usb_cmd(0x40, bytes((InfoKey.SPEED,)))
+        result["speed"] = int.from_bytes(data, "big")
+        _, data = self._usb_cmd(0x40, bytes((InfoKey.LABEL_TYPE,)))
+        result["label_type"] = int.from_bytes(data, "big")
+        _, data = self._usb_cmd(0x40, bytes((InfoKey.DEVICE_TYPE,)))
+        result["device_type"] = int.from_bytes(data, "big")
+        for key, name, fmt in [
+            (InfoKey.BLUETOOTH_ADDRESS, "bluetooth_address", "hex"),
+            (InfoKey.AUTO_SHUTDOWN_TIME, "auto_shutdown_time", "int"),
+        ]:
+            try:
+                _, data = self._usb_cmd(0x40, bytes((key,)))
+                result[name] = data.hex() if fmt == "hex" else int.from_bytes(data, "big")
+            except Exception:
+                pass
+        return result
+
+    async def get_rfid(self):
+        if self._usb:
+            return self._get_rfid_usb()
+        return await super().get_rfid()
+
+    def _get_rfid_usb(self):
+        import struct as _s
+        _, data = self._usb_cmd(0x1A, b"\x01")
+        if len(data) < 12 or data[0] == 0:
+            return None
+        uuid = data[0:8].hex()
+        idx = 8
+        barcode_len = data[idx]; idx += 1
+        barcode = data[idx:idx+barcode_len].decode(errors="replace"); idx += barcode_len
+        serial_len = data[idx]; idx += 1
+        serial = data[idx:idx+serial_len].decode(errors="replace"); idx += serial_len
+        total_len, used_len, type_ = _s.unpack(">HHB", data[idx:idx+5])
+        return {
+            "uuid": uuid, "barcode": barcode, "serial": serial,
+            "total_labels": total_len, "used_labels": used_len,
+            "remaining_labels": total_len - used_len, "type": type_,
+        }
+
+    async def heartbeat(self, hb_type=None):
+        if self._usb:
+            return self._heartbeat_usb()
+        from ..protocol import HeartbeatType
+        return await super().heartbeat(hb_type or HeartbeatType.ADVANCED1)
+
+    def _heartbeat_usb(self):
+        _, data = self._usb_cmd(0xDC, b"\x01")
+        result = {"raw": data.hex(), "closing_state": None,
+                  "power_level": None, "paper_state": None, "rfid_read_state": None}
+        n = len(data)
+        if n >= 20:
+            result["paper_state"] = data[18]; result["rfid_read_state"] = data[19]
+        elif n >= 13:
+            result["closing_state"] = data[9]; result["power_level"] = data[10]
+            result["paper_state"] = data[11]; result["rfid_read_state"] = data[12]
+        elif n >= 10:
+            result["closing_state"] = data[8]; result["power_level"] = data[9]
+        return result
+
     # ── Print image ──────────────────────────────────────────────────
 
     async def print_image(self, image, density=3, quantity=1,
@@ -130,19 +209,27 @@ class B1Printer(NiimbotPrinter):
         print(f"  [USB] All {len(packets)} rows sent in "
               f"{time.time()-t0:.1f}s")
 
-        # endPage
-        time.sleep(0.5)
-        for _ in range(300):
+        # Wait for the printer to physically finish printing.
+        # Data arrives much faster over USB than the printer can render,
+        # so we must wait for the mechanical print to complete before
+        # sending endPage, otherwise it ejects the label early.
+        # ~120 rows/sec print speed.
+        print_time = len(packets) / 120
+        print(f"  [USB] Waiting {print_time:.0f}s for print to finish...")
+        time.sleep(print_time)
+
+        # endPage — poll until acknowledged
+        for _ in range(60):
             try:
                 _, data = self._usb_cmd(0xE3, b"\x01")
                 if data[0]:
                     break
             except Exception:
                 pass
-            time.sleep(0.2)
+            time.sleep(0.5)
 
         # Poll status
-        for _ in range(600):
+        for _ in range(60):
             try:
                 _, data = self._usb_cmd(0xA3, b"\x01")
                 if len(data) >= 2:
@@ -151,7 +238,7 @@ class B1Printer(NiimbotPrinter):
                         break
             except Exception:
                 pass
-            time.sleep(0.2)
+            time.sleep(0.5)
 
         self._usb_cmd(0xF3, b"\x01")
         print(f"  [USB] Total: {time.time()-t0:.1f}s")
