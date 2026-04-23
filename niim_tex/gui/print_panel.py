@@ -123,7 +123,8 @@ class CropRect(QGraphicsRectItem):
         super().__init__(rect, parent)
         self._bounds = bounds
         self.setPen(QPen(QColor(255, 255, 255), 2, Qt.PenStyle.DashLine))
-        self.setBrush(Qt.BrushStyle.NoBrush)
+        from PyQt6.QtGui import QBrush
+        self.setBrush(QBrush(Qt.BrushStyle.NoBrush))
         self.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIsMovable, True)
         self.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemSendsGeometryChanges, True)
         self.setCursor(Qt.CursorShape.SizeAllCursor)
@@ -147,7 +148,7 @@ class CropOverlay(QGraphicsRectItem):
     def __init__(self, scene_rect, parent=None):
         super().__init__(scene_rect, parent)
         self.setBrush(QColor(0, 0, 0, 120))
-        self.setPen(Qt.PenStyle.NoPen)
+        self.setPen(QPen(Qt.PenStyle.NoPen))
         self.setZValue(5)
         self._hole = None
 
@@ -397,17 +398,21 @@ class PrintPanel(QWidget):
         file_group = QGroupBox("Files")
         file_layout = QVBoxLayout(file_group)
         btn_row = QHBoxLayout()
-        self.add_files_btn = QPushButton("Add Files...")
+        self.add_files_btn = QPushButton("Files...")
         self.add_files_btn.clicked.connect(self._on_add_files)
         btn_row.addWidget(self.add_files_btn)
+        self.add_folder_btn = QPushButton("Folder...")
+        self.add_folder_btn.clicked.connect(self._on_add_folder)
+        btn_row.addWidget(self.add_folder_btn)
         self.remove_btn = QPushButton("Remove")
         self.remove_btn.clicked.connect(self._on_remove)
         btn_row.addWidget(self.remove_btn)
-        self.clear_btn = QPushButton("Clear All")
+        self.clear_btn = QPushButton("Clear")
         self.clear_btn.clicked.connect(self._on_clear)
         btn_row.addWidget(self.clear_btn)
         file_layout.addLayout(btn_row)
         self.file_list = QListWidget()
+        self.file_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         self.file_list.currentRowChanged.connect(self._on_file_selected)
         file_layout.addWidget(self.file_list)
         left_layout.addWidget(file_group)
@@ -667,6 +672,21 @@ class PrintPanel(QWidget):
         if paths:
             self.load_files(paths)
 
+    def _on_add_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Select Image Folder")
+        if not folder:
+            return
+        IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tiff", ".tif",
+                      ".webp", ".avif", ".heif", ".heic", ".pdf"}
+        paths = []
+        for name in sorted(os.listdir(folder)):
+            if os.path.splitext(name)[1].lower() in IMAGE_EXTS:
+                paths.append(os.path.join(folder, name))
+        if paths:
+            self.load_files(paths)
+        else:
+            QMessageBox.warning(self, "No Images", f"No image files found in {folder}")
+
     def load_files(self, paths):
         """Load image/PDF/tex files into the file list."""
         printer_dpi = getattr(self.ble.printer, 'DPI', DPI) if self.ble.printer else 300
@@ -874,9 +894,14 @@ class PrintPanel(QWidget):
         density = self.density_spin.value()
         quantity = self.quantity_spin.value()
 
-        # Process all images (no preview corrections — those are display-only)
+        # Use selected items, or all if none selected
+        selected_rows = [idx.row() for idx in self.file_list.selectedIndexes()]
+        if not selected_rows:
+            selected_rows = list(range(len(self._images)))
+
         items = []
-        for name, img in self._images:
+        for i in selected_rows:
+            name, img = self._images[i]
             if crop and self._crop_fractions:
                 # Interactive crop — pre-crop then stretch to fill
                 src = self._apply_interactive_crop(img)
