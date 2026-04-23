@@ -126,7 +126,8 @@ class PreviewWorker(QThread):
 
     def __init__(self, image, target_w, target_h, dither, threshold,
                  no_stretch, crop, align, gamma,
-                 dot_spread=1.3, darken=4.20, black_pt=0.0, parent=None):
+                 gamma_offset=-0.30, dot_spread=1.3, darken=4.20,
+                 black_pt=25.0, parent=None):
         super().__init__(parent)
         self.image = image
         self.target_w = target_w
@@ -137,6 +138,7 @@ class PreviewWorker(QThread):
         self.crop = crop
         self.align = align
         self.gamma = gamma
+        self.gamma_offset = gamma_offset
         self.dot_spread = dot_spread
         self.darken = darken
         self.black_pt = black_pt
@@ -145,11 +147,12 @@ class PreviewWorker(QThread):
         try:
             from PIL import ImageFilter
 
-            # Standard pipeline (same as print/save)
+            # Pipeline with preview gamma offset applied
+            preview_gamma = max(0.01, self.gamma + self.gamma_offset)
             label = _prepare_label_image(
                 self.image, self.target_w, self.target_h,
                 self.dither, self.threshold, 0,
-                self.no_stretch, self.align, self.gamma, self.crop)
+                self.no_stretch, self.align, preview_gamma, self.crop)
 
             # Display-only corrections to simulate thermal print appearance
             preview = label.convert("L")
@@ -321,9 +324,10 @@ class PrintPanel(QWidget):
             layout.addLayout(row)
             return spin
 
+        self.preview_gamma_offset = _slider_row(preview_layout, "Gamma ofs:", -1.0, 1.0, -0.30, 0.01, 2)
         self.preview_dot_spread = _slider_row(preview_layout, "Dot spread:", 0.0, 10.0, 1.3, 0.1, 1)
         self.preview_darken = _slider_row(preview_layout, "Darken:", 0.0, 10.0, 4.20, 0.05, 2)
-        self.preview_black_pt = _slider_row(preview_layout, "Black point:", 0.0, 255.0, 0.0, 1.0, 0)
+        self.preview_black_pt = _slider_row(preview_layout, "Black point:", 0.0, 255.0, 25.0, 1.0, 0)
 
         left_layout.addWidget(preview_group)
 
@@ -539,6 +543,7 @@ class PrintPanel(QWidget):
         self._preview_worker = PreviewWorker(
             img, target_w, target_h, dither, threshold,
             no_stretch, crop, align, gamma,
+            self.preview_gamma_offset.value(),
             self.preview_dot_spread.value(),
             self.preview_darken.value(),
             self.preview_black_pt.value(), self)
