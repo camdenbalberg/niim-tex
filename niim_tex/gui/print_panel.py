@@ -424,17 +424,7 @@ class PreviewWorker(QThread):
         try:
             from PIL import ImageFilter
 
-            # Apply crop offset by padding the image to shift the crop window
             img = self.image
-            if self.crop and (self.crop_x != 0 or self.crop_y != 0):
-                from PIL import ImageOps as _IOps
-                # Positive X = shift crop right (pad left), negative = shift left (pad right)
-                # Positive Y = shift crop down (pad top), negative = shift up (pad bottom)
-                pl = max(0, self.crop_x)
-                pr = max(0, -self.crop_x)
-                pt = max(0, self.crop_y)
-                pb = max(0, -self.crop_y)
-                img = _IOps.expand(img, border=(pl, pt, pr, pb), fill=128)
 
             # Pipeline with preview gamma offset applied
             preview_gamma = max(0.01, self.gamma + self.gamma_offset)
@@ -446,12 +436,9 @@ class PreviewWorker(QThread):
             # Display-only corrections to simulate thermal print appearance
             preview = label.convert("L")
 
-            # Dot spread: blur simulates thermal dots bleeding into each other
             if self.dot_spread > 0:
                 preview = preview.filter(ImageFilter.GaussianBlur(radius=self.dot_spread))
 
-            # Darken: gamma > 1 darkens (thermal prints are darker than screen)
-            # Black point: crush anything below threshold to pure black
             bp = int(self.black_pt)
             if self.darken != 1.0 or bp > 0:
                 lut = []
@@ -463,7 +450,9 @@ class PreviewWorker(QThread):
                 preview = preview.point(lut)
 
             pixmap = pil_to_qpixmap(preview)
-            info = f"{label.width}x{label.height}px"
+            info = (f"{label.width}x{label.height}px | "
+                    f"g={preview_gamma:.2f} blur={self.dot_spread} "
+                    f"dark={self.darken} bp={bp}")
             self.finished.emit(pixmap, info)
         except Exception as e:
             self.finished.emit(None, f"Error: {e}")
@@ -934,19 +923,22 @@ class PrintPanel(QWidget):
 
         raw_mode = self.render_combo.currentIndex() == 1
         if raw_mode:
-            # Raw: no preview corrections, show exact dithered output
             g_ofs, d_spr, dark, bp = 0.0, 0.0, 1.0, 0.0
         else:
-            # Print sim: apply calibrated corrections
             g_ofs = self.preview_gamma_offset.value()
             d_spr = self.preview_dot_spread.value()
             dark = self.preview_darken.value()
             bp = self.preview_black_pt.value()
 
+        # Kill any previous worker
+        if self._preview_worker and self._preview_worker.isRunning():
+            self._preview_worker.finished.disconnect()
+            self._preview_worker.wait(100)
+
         self._preview_worker = PreviewWorker(
             img, target_w, target_h, dither, threshold,
             no_stretch, False, align, gamma,
-            0, 0, g_ofs, d_spr, dark, bp, self)
+            0, 0, g_ofs, d_spr, dark, bp)
         self._preview_worker.finished.connect(self._on_preview_done)
         self._preview_worker.start()
 
