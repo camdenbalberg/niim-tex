@@ -716,8 +716,8 @@ class PrintPanel(QWidget):
 
         # Display rendering controls
         self.render_combo = QComboBox()
-        self.render_combo.addItems(["Nearest", "Smooth"])
-        self.render_combo.setToolTip("Pixel rendering mode")
+        self.render_combo.addItems(["Print sim", "Raw pixels"])
+        self.render_combo.setToolTip("Print sim = how the print looks in real life\nRaw pixels = exact dithered output file")
         self.render_combo.currentIndexChanged.connect(self._on_render_changed)
         preview_header.addWidget(self.render_combo)
 
@@ -932,14 +932,21 @@ class PrintPanel(QWidget):
         dither = self.dither_cb.isChecked()
         threshold = self.threshold_spin.value()
 
+        raw_mode = self.render_combo.currentIndex() == 1
+        if raw_mode:
+            # Raw: no preview corrections, show exact dithered output
+            g_ofs, d_spr, dark, bp = 0.0, 0.0, 1.0, 0.0
+        else:
+            # Print sim: apply calibrated corrections
+            g_ofs = self.preview_gamma_offset.value()
+            d_spr = self.preview_dot_spread.value()
+            dark = self.preview_darken.value()
+            bp = self.preview_black_pt.value()
+
         self._preview_worker = PreviewWorker(
             img, target_w, target_h, dither, threshold,
             no_stretch, False, align, gamma,
-            0, 0,
-            self.preview_gamma_offset.value(),
-            self.preview_dot_spread.value(),
-            self.preview_darken.value(),
-            self.preview_black_pt.value(), self)
+            0, 0, g_ofs, d_spr, dark, bp, self)
         self._preview_worker.finished.connect(self._on_preview_done)
         self._preview_worker.start()
 
@@ -976,11 +983,10 @@ class PrintPanel(QWidget):
         self.zoom_spin.blockSignals(False)
 
     def _on_render_changed(self, idx):
-        smooth = idx == 1  # 0=Nearest, 1=Smooth
+        # 0=Print sim (smooth + corrections), 1=Raw (nearest, no corrections)
+        raw = idx == 1
         self.preview_view.setRenderHint(
-            QPainter.RenderHint.SmoothPixmapTransform, smooth)
-        self.preview_view.viewport().update()
-        # Also force re-render the preview
+            QPainter.RenderHint.SmoothPixmapTransform, not raw)
         self._schedule_preview()
 
     def _on_zoom_spin(self, pct):
