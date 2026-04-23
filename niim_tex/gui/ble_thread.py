@@ -83,7 +83,16 @@ class BleThread(QThread):
         if self.printer and hasattr(self.printer, 'is_connected') and self.printer.is_connected:
             await self.printer.disconnect()
 
-        self.printer = get_printer(model)
+        self.printer = get_printer(model, prefer_usb=True)
+
+        # If USB already connected via get_printer, skip BLE
+        if self.printer.is_connected:
+            name = self.printer._device_name or "USB"
+            self.connected.emit(name)
+            self._start_heartbeat()
+            return name
+
+        # Fall back to BLE
         self.printer._notify_event = asyncio.Event()
         name = await self.printer.connect()
         self.connected.emit(name)

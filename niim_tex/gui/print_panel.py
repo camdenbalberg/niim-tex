@@ -126,6 +126,7 @@ class PreviewWorker(QThread):
 
     def __init__(self, image, target_w, target_h, dither, threshold,
                  no_stretch, crop, align, gamma,
+                 crop_x=0, crop_y=0,
                  gamma_offset=-0.30, dot_spread=1.3, darken=4.20,
                  black_pt=25.0, parent=None):
         super().__init__(parent)
@@ -138,6 +139,8 @@ class PreviewWorker(QThread):
         self.crop = crop
         self.align = align
         self.gamma = gamma
+        self.crop_x = crop_x
+        self.crop_y = crop_y
         self.gamma_offset = gamma_offset
         self.dot_spread = dot_spread
         self.darken = darken
@@ -147,10 +150,22 @@ class PreviewWorker(QThread):
         try:
             from PIL import ImageFilter
 
+            # Apply crop offset by padding the image to shift the crop window
+            img = self.image
+            if self.crop and (self.crop_x != 0 or self.crop_y != 0):
+                from PIL import ImageOps as _IOps
+                # Positive X = shift crop right (pad left), negative = shift left (pad right)
+                # Positive Y = shift crop down (pad top), negative = shift up (pad bottom)
+                pl = max(0, self.crop_x)
+                pr = max(0, -self.crop_x)
+                pt = max(0, self.crop_y)
+                pb = max(0, -self.crop_y)
+                img = _IOps.expand(img, border=(pl, pt, pr, pb), fill=128)
+
             # Pipeline with preview gamma offset applied
             preview_gamma = max(0.01, self.gamma + self.gamma_offset)
             label = _prepare_label_image(
-                self.image, self.target_w, self.target_h,
+                img, self.target_w, self.target_h,
                 self.dither, self.threshold, 0,
                 self.no_stretch, self.align, preview_gamma, self.crop)
 
@@ -291,6 +306,29 @@ class PrintPanel(QWidget):
         align_row.addWidget(self.align_combo)
         align_row.addStretch()
         settings_layout.addLayout(align_row)
+
+        # Crop offset (shift the crop window when using Crop mode)
+        crop_x_row = QHBoxLayout()
+        crop_x_row.addWidget(QLabel("Crop X:"))
+        self.crop_x_spin = QSpinBox()
+        self.crop_x_spin.setRange(-500, 500)
+        self.crop_x_spin.setValue(0)
+        self.crop_x_spin.setSuffix(" px")
+        self.crop_x_spin.valueChanged.connect(self._schedule_preview)
+        crop_x_row.addWidget(self.crop_x_spin)
+        crop_x_row.addStretch()
+        settings_layout.addLayout(crop_x_row)
+
+        crop_y_row = QHBoxLayout()
+        crop_y_row.addWidget(QLabel("Crop Y:"))
+        self.crop_y_spin = QSpinBox()
+        self.crop_y_spin.setRange(-500, 500)
+        self.crop_y_spin.setValue(0)
+        self.crop_y_spin.setSuffix(" px")
+        self.crop_y_spin.valueChanged.connect(self._schedule_preview)
+        crop_y_row.addWidget(self.crop_y_spin)
+        crop_y_row.addStretch()
+        settings_layout.addLayout(crop_y_row)
 
         # Dither
         dither_row = QHBoxLayout()
@@ -556,9 +594,13 @@ class PrintPanel(QWidget):
         dither = self.dither_cb.isChecked()
         threshold = self.threshold_spin.value()
 
+        crop_x = self.crop_x_spin.value()
+        crop_y = self.crop_y_spin.value()
+
         self._preview_worker = PreviewWorker(
             img, target_w, target_h, dither, threshold,
             no_stretch, crop, align, gamma,
+            crop_x, crop_y,
             self.preview_gamma_offset.value(),
             self.preview_dot_spread.value(),
             self.preview_darken.value(),
@@ -626,11 +668,15 @@ class PrintPanel(QWidget):
         density = self.density_spin.value()
         quantity = self.quantity_spin.value()
 
+        crop_x = self.crop_x_spin.value()
+        crop_y = self.crop_y_spin.value()
+
         # Process all images (no preview corrections — those are display-only)
         items = []
         for name, img in self._images:
+            src = self._apply_crop_offset(img, crop, crop_x, crop_y)
             label = _prepare_label_image(
-                img, target_w, target_h, dither, threshold, 0,
+                src, target_w, target_h, dither, threshold, 0,
                 no_stretch, align, gamma, crop)
             items.append((label, density, quantity, 1))
 
@@ -656,6 +702,8 @@ class PrintPanel(QWidget):
         dither = self.dither_cb.isChecked()
         threshold = self.threshold_spin.value()
         printer_dpi = getattr(self.ble.printer, 'DPI', 300) if self.ble.printer else 300
+        crop_x = self.crop_x_spin.value()
+        crop_y = self.crop_y_spin.value()
 
         if len(self._images) == 1:
             name, img = self._images[0]
@@ -665,8 +713,9 @@ class PrintPanel(QWidget):
                 "PNG (*.png);;All Files (*)")
             if not path:
                 return
+            src = self._apply_crop_offset(img, crop, crop_x, crop_y)
             label = _prepare_label_image(
-                img, target_w, target_h, dither, threshold, 0,
+                src, target_w, target_h, dither, threshold, 0,
                 no_stretch, align, gamma, crop)
             label.save(path, dpi=(printer_dpi, printer_dpi))
             QMessageBox.information(self, "Saved",
@@ -677,8 +726,9 @@ class PrintPanel(QWidget):
                 return
             for name, img in self._images:
                 base = os.path.splitext(name)[0]
+                src = self._apply_crop_offset(img, crop, crop_x, crop_y)
                 label = _prepare_label_image(
-                    img, target_w, target_h, dither, threshold, 0,
+                    src, target_w, target_h, dither, threshold, 0,
                     no_stretch, align, gamma, crop)
                 out = os.path.join(folder, f"{base}_print.png")
                 label.save(out, dpi=(printer_dpi, printer_dpi))
@@ -705,6 +755,18 @@ class PrintPanel(QWidget):
     def _on_printer_disconnected(self):
         pass
 
+    @staticmethod
+    def _apply_crop_offset(img, crop, crop_x, crop_y):
+        """Shift the image to offset the crop window."""
+        if not crop or (crop_x == 0 and crop_y == 0):
+            return img
+        from PIL import ImageOps as _IOps
+        pl = max(0, crop_x)
+        pr = max(0, -crop_x)
+        pt = max(0, crop_y)
+        pb = max(0, -crop_y)
+        return _IOps.expand(img, border=(pl, pt, pr, pb), fill=128)
+
     # ── Settings persistence ─────────────────────────────────────────
 
     def save_settings(self, s):
@@ -726,6 +788,8 @@ class PrintPanel(QWidget):
         s.setValue("print/threshold", self.threshold_spin.value())
         s.setValue("print/quantity", self.quantity_spin.value())
         s.setValue("print/dpi", self.dpi_spin.value())
+        s.setValue("print/crop_x", self.crop_x_spin.value())
+        s.setValue("print/crop_y", self.crop_y_spin.value())
 
         # Preview corrections
         s.setValue("preview/gamma_offset", self.preview_gamma_offset.value())
@@ -762,6 +826,8 @@ class PrintPanel(QWidget):
         self.dither_cb.setChecked(s.value("print/dither", True, type=bool))
         self.threshold_spin.setValue(int(s.value("print/threshold", 128)))
         self.quantity_spin.setValue(int(s.value("print/quantity", 1)))
+        self.crop_x_spin.setValue(int(s.value("print/crop_x", 0)))
+        self.crop_y_spin.setValue(int(s.value("print/crop_y", 0)))
         self.dpi_spin.setValue(int(s.value("print/dpi", 300)))
 
         # Preview corrections
