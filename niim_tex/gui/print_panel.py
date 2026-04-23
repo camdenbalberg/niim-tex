@@ -840,10 +840,9 @@ class PrintPanel(QWidget):
         self.render_combo.setCurrentIndex(int(s.value("preview/render", 0)))
         self.zoom_spin.setValue(int(s.value("preview/zoom", 30)))
 
-        # Files
+        # Files — load after GUI is visible (deferred)
         paths = s.value("print/file_paths", [])
         if paths and isinstance(paths, list):
             valid = [p for p in paths if os.path.isfile(p)]
             if valid:
-                self._file_paths = valid
-                self.load_files(valid)
+                QTimer.singleShot(500, lambda: self.load_files(valid))
