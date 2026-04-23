@@ -122,17 +122,9 @@ class B1Printer(NiimbotPrinter):
         self._usb_cmd(0x13, struct.pack(">HH", img.height, img.width))
         self._usb_cmd(0x15, struct.pack(">H", quantity))
 
-        # Send rows with pacing — USB has no flow control, so we
-        # must not flood faster than the printer can process.
-        for i, pkt in enumerate(packets):
+        # Send all rows in one burst — USB CDC handles flow control
+        for pkt in packets:
             self._usb.ser.write(pkt)
-            # Flush + tiny delay every 10 rows to prevent buffer overflow
-            if (i + 1) % 10 == 0:
-                self._usb.ser.flush()
-                time.sleep(0.001)
-            if (i + 1) % 500 == 0:
-                print(f"  [USB] Sent {i+1}/{len(packets)} rows "
-                      f"({time.time()-t0:.1f}s)")
         self._usb.ser.flush()
 
         print(f"  [USB] All {len(packets)} rows sent in "
