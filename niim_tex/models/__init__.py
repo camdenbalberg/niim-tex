@@ -20,11 +20,12 @@ for cls in MODELS.values():
     ALL_PREFIXES.extend(cls.MODEL_PREFIXES)
 
 
-def get_printer(model=None):
+def get_printer(model=None, prefer_usb=True):
     """Return a printer instance.
 
     Args:
         model: Model name (e.g. "d110", "b1"). If None, auto-detects any known printer.
+        prefer_usb: If True, check for USB serial connection before BLE.
     """
     if model:
         key = model.lower().replace("-", "").replace("_", "").replace(" ", "")
@@ -33,7 +34,18 @@ def get_printer(model=None):
         if not cls:
             available = ", ".join(MODELS.keys())
             raise ValueError(f"Unknown model: {model}. Available: {available}")
-        return cls()
+        printer = cls()
+        # Try USB first if available
+        if prefer_usb and hasattr(printer, 'connect_usb'):
+            try:
+                from ..transport import find_niimbot_usb
+                port = find_niimbot_usb()
+                if port:
+                    printer.connect_usb(port)
+                    print(f"Connected via USB: {port}")
+            except Exception:
+                pass  # Fall back to BLE
+        return printer
 
     # Auto-detect: return a printer that scans for ALL known prefixes
     return _AutoDetectPrinter()

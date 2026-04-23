@@ -3,6 +3,7 @@
 import asyncio
 import math
 import struct
+import time
 
 from PIL import ImageOps
 
@@ -13,70 +14,88 @@ from ..protocol import LabelType, packet as build_packet, parse_response
 class B1Printer(NiimbotPrinter):
     """Driver for the NIIMBOT B1 / B1 Pro (standard protocol).
 
-    Protocol based on NiimPrintX reference implementation.  Key differences
-    from the D110_M V4 variant:
-    - startPrint uses a 1-byte payload
-    - startPage (0x03) is required
-    - setDimension uses 4 bytes (height, width) instead of 13
-    - setQuantity is a separate command (not embedded in setPageSize)
-    - Image rows use zero counts in the 6-byte header (same struct as D110)
-    - Commands use write-with-response; image data uses write-without-response
-    - No one-way heartbeat workaround needed after endPrint
+    Supports both BLE and USB serial transports. USB is preferred when
+    available — it's ~10x faster than BLE on Windows.
     """
 
     MODEL_PREFIXES = ["B1"]
-    DPI = 300             # B1 Pro native resolution
-    MAX_WIDTH_PX = 591    # 50mm printhead at 300 DPI
+    DPI = 300
+    MAX_WIDTH_PX = 591
     MAX_DENSITY = 5
     PRINTABLE_HEIGHT_MM = 50
-    DEFAULT_GAMMA = 0.55  # Compensate for finer 300 DPI dots filling in darker
+    DEFAULT_GAMMA = 0.55
+
+    def __init__(self):
+        super().__init__()
+        self._usb = None  # UsbTransport when connected via USB
 
     @classmethod
     def _matches_name(cls, name):
-        """Match B1 but not B18, B1S, etc."""
         upper = name.upper()
         if not upper.startswith("B1"):
             return False
-        # Next char must not be alphanumeric (to exclude B18, B1S, etc.)
         if len(upper) > 2 and upper[2].isalnum() and upper[2] != "_":
             return False
         return True
 
+    # ── USB connection ───────────────────────────────────────────────
+
+    def connect_usb(self, port=None):
+        """Connect via USB serial. Returns port name."""
+        from ..transport import UsbTransport
+        self._usb = UsbTransport(port)
+        name = self._usb.connect()
+        self._device_name = f"USB:{name}"
+        return self._device_name
+
+    async def connect(self):
+        """Connect via BLE (async). For USB, use connect_usb() instead."""
+        return await super().connect()
+
+    async def disconnect(self):
+        if self._usb:
+            self._usb.disconnect()
+            self._usb = None
+        else:
+            await super().disconnect()
+
+    @property
+    def is_connected(self):
+        if self._usb:
+            return self._usb.is_connected
+        return super().is_connected
+
+    # ── Unified command interface ────────────────────────────────────
+
+    def _usb_cmd(self, cmd, data):
+        """Send command over USB and return (cmd, data) response."""
+        return self._usb.command(cmd, data)
+
+    def _usb_write(self, raw_bytes):
+        """Send raw bytes over USB (no response wait)."""
+        self._usb.write_raw(raw_bytes)
+
+    # ── Print image ──────────────────────────────────────────────────
+
     async def print_image(self, image, density=3, quantity=1,
                           label_type=LabelType.WITH_GAPS,
                           vertical_offset=0, horizontal_offset=0):
-        """Print a PIL Image using the B1 standard print sequence.
-
-        Args:
-            image: PIL Image to print.
-            density: Print darkness 1-5 (default 3).
-            quantity: Number of copies (default 1).
-            label_type: LabelType enum (default WITH_GAPS).
-            vertical_offset: Pixel rows of blank space to add above image.
-            horizontal_offset: Pixel columns to shift image.
-        """
         if density > self.MAX_DENSITY:
             density = self.MAX_DENSITY
 
-        # Convert to monochrome: invert so 1=black (heat), 0=white (no heat)
         img = ImageOps.invert(image.convert("L")).convert("1")
 
-        # Apply horizontal offset
         if horizontal_offset > 0:
             img = ImageOps.expand(img, border=(horizontal_offset, 0, 0, 0), fill=0)
         elif horizontal_offset < 0:
             img = img.crop((-horizontal_offset, 0, img.width, img.height))
-
-        # Apply vertical offset
         if vertical_offset > 0:
             img = ImageOps.expand(img, border=(0, vertical_offset, 0, 0), fill=0)
 
         if img.width > self.MAX_WIDTH_PX:
             raise ValueError(f"Image too wide: {img.width}px > {self.MAX_WIDTH_PX}px")
 
-        # Pre-encode all row packets using PIL's native bit packing (fast).
-        # tobytes("raw", "1") packs mode-1 pixels as MSB-first bits — exactly
-        # the format the printer expects (1=heat, 0=no heat).
+        # Pre-encode all row packets
         row_width_bytes = math.ceil(img.width / 8)
         packed = img.tobytes("raw", "1")
         packets = []
@@ -85,37 +104,87 @@ class B1Printer(NiimbotPrinter):
             header = struct.pack(">H3BB", y, 0, 0, 0, 1)
             packets.append(build_packet(0x85, header + row_bytes))
 
-        # Fresh event to avoid cross-loop issues from multiple asyncio.run() calls
-        self._notify_event = asyncio.Event()
+        if self._usb:
+            self._print_usb(img, packets, density, quantity, label_type)
+        else:
+            await self._print_ble(img, packets, density, quantity, label_type)
 
-        # Use persistent notifications for the entire print session
+    # ── USB print path (synchronous, fast) ───────────────────────────
+
+    def _print_usb(self, img, packets, density, quantity, label_type):
+        """Print over USB serial — no BLE overhead."""
+        t0 = time.time()
+
+        self._usb_cmd(0x21, bytes((density,)))
+        self._usb_cmd(0x23, bytes((int(label_type),)))
+        self._usb_cmd(0x01, b"\x01")
+        self._usb_cmd(0x03, b"\x01")
+        self._usb_cmd(0x13, struct.pack(">HH", img.height, img.width))
+        self._usb_cmd(0x15, struct.pack(">H", quantity))
+
+        # Send rows with pacing — USB has no flow control, so we
+        # must not flood faster than the printer can process.
+        for i, pkt in enumerate(packets):
+            self._usb.ser.write(pkt)
+            # Flush + tiny delay every 10 rows to prevent buffer overflow
+            if (i + 1) % 10 == 0:
+                self._usb.ser.flush()
+                time.sleep(0.001)
+            if (i + 1) % 500 == 0:
+                print(f"  [USB] Sent {i+1}/{len(packets)} rows "
+                      f"({time.time()-t0:.1f}s)")
+        self._usb.ser.flush()
+
+        print(f"  [USB] All {len(packets)} rows sent in "
+              f"{time.time()-t0:.1f}s")
+
+        # endPage
+        time.sleep(0.5)
+        for _ in range(300):
+            try:
+                _, data = self._usb_cmd(0xE3, b"\x01")
+                if data[0]:
+                    break
+            except Exception:
+                pass
+            time.sleep(0.2)
+
+        # Poll status
+        for _ in range(600):
+            try:
+                _, data = self._usb_cmd(0xA3, b"\x01")
+                if len(data) >= 2:
+                    page = struct.unpack(">H", data[:2])[0]
+                    if page >= quantity:
+                        break
+            except Exception:
+                pass
+            time.sleep(0.2)
+
+        self._usb_cmd(0xF3, b"\x01")
+        print(f"  [USB] Total: {time.time()-t0:.1f}s")
+
+    # ── BLE print path (async, slower) ───────────────────────────────
+
+    async def _print_ble(self, img, packets, density, quantity, label_type):
+        """Print over BLE — write-with-response."""
+        self._notify_event = asyncio.Event()
         await self._start_notify()
 
         try:
-            # 1. Setup (write-with-response, wait for notification)
             await self._b1_cmd(0x21, bytes((density,)))
             await self._b1_cmd(0x23, bytes((int(label_type),)))
-            await self._b1_cmd(0x01, b"\x01")                              # startPrint
-            await self._b1_cmd(0x03, b"\x01")                              # startPage
+            await self._b1_cmd(0x01, b"\x01")
+            await self._b1_cmd(0x03, b"\x01")
             await self._b1_cmd(0x13, struct.pack(">HH", img.height, img.width))
-            await self._b1_cmd(0x15, struct.pack(">H", quantity))          # setQuantity
+            await self._b1_cmd(0x15, struct.pack(">H", quantity))
 
-            # 2. Send image rows — write-with-response, no delay.
             for pkt in packets:
                 await self.client.write_gatt_char(self.char_uuid, pkt)
 
-            # 3. Wait for printer to finish rendering, then endPage.
-            #    The printer buffers rows and prints asynchronously. We must
-            #    wait for it to physically finish before sending endPage,
-            #    otherwise it truncates the output.
-            #    Clear stale notifications that arrived during data transfer.
             await self._stop_notify()
             await asyncio.sleep(1.0)
 
-            # Use one-shot commands for post-print sequence (like NiimPrintX)
-            # to avoid stale notification issues from the data transfer phase.
-
-            # endPage
             for _ in range(300):
                 try:
                     _, data = await self._command(0xE3, b"\x01")
@@ -125,7 +194,6 @@ class B1Printer(NiimbotPrinter):
                     pass
                 await asyncio.sleep(0.2)
 
-            # Poll status until done
             for _ in range(600):
                 try:
                     _, data = await self._command(0xA3, b"\x01")
@@ -137,19 +205,17 @@ class B1Printer(NiimbotPrinter):
                     pass
                 await asyncio.sleep(0.2)
 
-            # endPrint
             await self._command(0xF3, b"\x01")
 
         finally:
             try:
                 await self._stop_notify()
             except Exception:
-                pass  # already stopped
+                pass
 
     async def _b1_cmd(self, cmd, data, timeout=10):
-        """Send command and wait for response (persistent notify, write-with-response)."""
         self._notify_event.clear()
         await self.client.write_gatt_char(
-            self.char_uuid, build_packet(cmd, data))  # default = with response
+            self.char_uuid, build_packet(cmd, data))
         await asyncio.wait_for(self._notify_event.wait(), timeout)
         return parse_response(self._notify_data)
