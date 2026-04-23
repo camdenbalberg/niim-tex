@@ -327,7 +327,7 @@ class PrintPanel(QWidget):
         self.preview_gamma_offset = _slider_row(preview_layout, "Gamma ofs:", -1.0, 1.0, -0.30, 0.01, 2)
         self.preview_dot_spread = _slider_row(preview_layout, "Dot spread:", 0.0, 10.0, 1.3, 0.1, 1)
         self.preview_darken = _slider_row(preview_layout, "Darken:", 0.0, 10.0, 4.20, 0.05, 2)
-        self.preview_black_pt = _slider_row(preview_layout, "Black point:", 0.0, 255.0, 25.0, 1.0, 0)
+        self.preview_black_pt = _slider_row(preview_layout, "Black point:", 0.0, 255.0, 49.0, 1.0, 0)
 
         left_layout.addWidget(preview_group)
 
