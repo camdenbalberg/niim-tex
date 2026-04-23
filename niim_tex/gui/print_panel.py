@@ -705,8 +705,8 @@ class PrintPanel(QWidget):
 
         # Display rendering controls
         self.render_combo = QComboBox()
-        self.render_combo.addItems(["Print sim", "Raw pixels"])
-        self.render_combo.setToolTip("Print sim = how the print looks in real life\nRaw pixels = exact dithered output file")
+        self.render_combo.addItems(["Print sim", "Raw pixels", "Crop editor"])
+        self.render_combo.setToolTip("Print sim = thermal print look\nRaw = exact output\nCrop editor = position the crop")
         self.render_combo.currentIndexChanged.connect(self._on_render_changed)
         preview_header.addWidget(self.render_combo)
 
@@ -907,13 +907,20 @@ class PrintPanel(QWidget):
         mode_id = self.mode_group.checkedId()
         no_stretch = mode_id == 1
         crop = mode_id == 2
+        render_idx = self.render_combo.currentIndex()
 
-        # Show interactive crop editor when Crop mode is active
-        if crop:
+        # Crop editor view (index 2)
+        if render_idx == 2 and crop:
             self._preview_stack.setCurrentIndex(1)
             self.crop_view.set_image(img, target_w, target_h)
             self.info_label.setText("Drag the crop rectangle to reposition")
             return
+
+        # For Print sim / Raw, if crop mode is active, apply interactive crop
+        if crop and self._crop_fractions:
+            img = self._apply_interactive_crop(img)
+            crop = False
+            no_stretch = False
 
         self._preview_stack.setCurrentIndex(0)
         align = self.align_combo.currentText()
@@ -921,7 +928,7 @@ class PrintPanel(QWidget):
         dither = self.dither_cb.isChecked()
         threshold = self.threshold_spin.value()
 
-        raw_mode = self.render_combo.currentIndex() == 1
+        raw_mode = render_idx == 1
         if raw_mode:
             g_ofs, d_spr, dark, bp = 0.0, 0.0, 1.0, 0.0
         else:
@@ -995,10 +1002,9 @@ class PrintPanel(QWidget):
         self.zoom_spin.blockSignals(False)
 
     def _on_render_changed(self, idx):
-        # 0=Print sim (smooth + corrections), 1=Raw (nearest, no corrections)
-        raw = idx == 1
+        # 0=Print sim, 1=Raw pixels, 2=Crop editor
         self.preview_view.setRenderHint(
-            QPainter.RenderHint.SmoothPixmapTransform, not raw)
+            QPainter.RenderHint.SmoothPixmapTransform, idx == 0)
         self._schedule_preview()
 
     def _on_zoom_spin(self, pct):
@@ -1016,7 +1022,6 @@ class PrintPanel(QWidget):
         self.zoom_spin.blockSignals(False)
 
     def _on_preview_done(self, pixmap, info):
-        import sys; print(f"[preview_done] info={info}", flush=True, file=sys.stderr)
         if pixmap:
             self.preview_view.set_pixmap(pixmap)
         self.info_label.setText(info)
